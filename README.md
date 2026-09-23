@@ -3,6 +3,8 @@
 Rueda zodíaco-musical interactiva con carta astral en tiempo real, sintetizador
 y bancos de fechas disparables por MIDI.
 
+![Carta Astral Sónica: fondo Sistema solar, carta astral y piano microtonal en la bandeja inferior](docs/captura.png)
+
 ## Estructura
 
 ```
