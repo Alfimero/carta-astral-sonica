@@ -1,0 +1,33 @@
+# =========================================================
+# .gitignore para la versión web
+# =========================================================
+
+# Archivos privados del editor visual (solo en tu máquina)
+dev.html
+js/dev-panel.js
+js/dev-panel.css
+dev-panel.css
+
+# Contextos y herramientas locales (grafo, Claude, gestor de proyectos)
+graphify-out/
+.claude/
+.pm/
+CLAUDE.md
+
+# Configuración local del editor (tema personal en localStorage no se commitea,
+# pero los exports de JSON sí podrías querer excluirlos si los guardas aquí)
+*.local.json
+themes-locales/
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*~
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Carta Astral Sónica</title>
+  <link rel="stylesheet" href="style.css">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.browser.js"></script>
+
+  <style>
+    /* Visor de errores temporal — quitar cuando funcione todo */
+    #error-box {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      max-height: 50vh;
+      overflow-y: auto;
+      background: #fff5f5;
+      border: 2px solid #c92a2a;
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      color: #c92a2a;
+      z-index: 9999;
+      display: none;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    }
+    #error-box.has-errors { display: block; }
+    #error-box h3 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+    }
+    #error-box button {
+      font-size: 11px;
+      padding: 2px 8px;
+      background: white;
+      border: 1px solid #c92a2a;
+      color: #c92a2a;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    #error-box pre {
+      margin: 4px 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+
+  <script>
+    // Captura errores tempranos para diagnóstico
+    window.__caErrors = [];
+    function mostrarError(msg, src, line, col, err) {
+      window.__caErrors.push({msg, src, line, col, stack: err && err.stack});
+      try {
+        let box = document.getElementById("error-box");
+        if (!box) {
+          // Si el body aún no existe, esperar
+          document.addEventListener("DOMContentLoaded", () => mostrarError(msg, src, line, col, err));
+          return;
+        }
+        box.classList.add("has-errors");
+        const item = document.createElement("pre");
+        item.textContent = `❌ ${msg}\n  en ${src}:${line}:${col}` + (err && err.stack ? `\n  ${err.stack.split("\n").slice(0,4).join("\n  ")}` : "");
+        box.appendChild(item);
+      } catch (e) {}
+    }
+    window.addEventListener("error", e => mostrarError(e.message, e.filename, e.lineno, e.colno, e.error));
+    window.addEventListener("unhandledrejection", e => mostrarError("Promise rechazada: " + e.reason, "", 0, 0, e.reason));
+  </script>
+</head>
+<body>
+  <div id="error-box">
+    <h3>
+      <span>Errores detectados:</span>
+      <button onclick="this.parentNode.parentNode.classList.remove('has-errors')">cerrar</button>
+    </h3>
+  </div>
+
+  <div class="layout">
+
+    <main class="wheel">
+      <div id="wheel-canvas"></div>
+      <div class="vista-toolbar">
+        <button type="button" id="btn-vista-carta" class="vista-btn activo" title="Mostrar / ocultar la carta astral">☉ Carta</button>
+        <select id="select-vista-fondo" title="Vista de fondo">
+          <option value="ninguno">Fondo: ninguno</option>
+          <option value="sistema">Fondo: Sistema solar</option>
+          <option value="observatorio">Fondo: Observatorio</option>
+        </select>
+        <button type="button" id="btn-panel-toggle" title="Mostrar / ocultar el panel lateral">⇄ Panel</button>
+        <button type="button" id="btn-mezclador-toggle" title="Mezclador: maestro, secuenciador, piano y astros">🎚 Mezclador</button>
+        <button type="button" id="btn-rack-sintetizadores-toggle" title="Rack de sintetizadores: octava, onda, volumen, armónicos, FM, filtros y ADSR de cada astro">🎛 Sintetizadores</button>
+        <label class="mini-opacidad-wrap" id="panel-opacidad-wrap" title="Opacidad del panel lateral (al bajarla, el panel flota sobre el gráfico)">
+          ◧ <input type="range" id="panel-opacidad" min="0.25" max="1" step="0.05" value="1">
+        </label>
+        <label class="mini-opacidad-wrap" id="mini-opacidad-wrap" hidden title="Opacidad de la mini carta">
+          ◐ <input type="range" id="mini-opacidad" min="0.15" max="1" step="0.05" value="0.92">
+        </label>
+      </div>
+    </main>
+
+    <aside class="panel">
+      <header class="panel-header">
+        <h1>Carta astral sónica</h1>
+        <p class="subtitle">Beta · p5.js + astronomy-engine</p>
+      </header>
+
+      <section class="panel-section panel-status">
+        <p><strong>Modo:</strong> <span id="modo-actual">DEMO</span></p>
+        <p><strong>Fecha/hora activa:</strong> <span id="fecha-hora-actual">—</span></p>
+        <p><strong>Paso temporal:</strong> <span id="paso-temporal">1 hora</span></p>
+        <p><strong>Música:</strong> <span id="modo-musical">Cromático</span></p>
+        <p><strong>Microtonos:</strong> <span id="numero-microtonos">24</span></p>
+        <p class="error-msg" id="mensaje-error" hidden></p>
+      </section>
+
+      <details class="panel-section panel-colapsable" id="seccion-synth" open>
+        <summary class="seccion-titulo">🎹 Sintetizador <span class="colapsable-hint">(clic para ocultar/mostrar)</span></summary>
+
+        <label class="synth-master-toggle">
+          <input type="checkbox" id="synth-enabled">
+          <span>Activar audio</span>
+        </label>
+
+        <label class="synth-volume">
+          Volumen maestro
+          <input type="range" id="synth-master-volume" min="0" max="100" value="12">
+        </label>
+
+        <div class="synth-modes">
+          <label class="synth-mode-option">
+            <input type="radio" name="synth-mode" value="continuo">
+            <span class="synth-mode-title">Continuo</span>
+            <small>360° = 1 octava, glissando</small>
+          </label>
+          <label class="synth-mode-option">
+            <input type="radio" name="synth-mode" value="region">
+            <span class="synth-mode-title">Región tonal</span>
+            <small>nota fija por microtono</small>
+          </label>
+        </div>
+
+        <div class="synth-modes synth-modes-playback">
+          <label class="synth-mode-option">
+            <input type="radio" name="synth-playback-mode" value="acorde">
+            <span class="synth-mode-title">Acorde</span>
+            <small>todos juntos</small>
+          </label>
+          <label class="synth-mode-option">
+            <input type="radio" name="synth-playback-mode" value="secuencia">
+            <span class="synth-mode-title">Secuencia</span>
+            <small>uno por uno (BPM)</small>
+          </label>
+        </div>
+
+        <div class="synth-modes synth-modes-trigger">
+          <label class="synth-mode-option">
+            <input type="radio" name="synth-trigger-mode" value="drone">
+            <span class="synth-mode-title">Drone (toggle)</span>
+            <small>sonido continuo on/off</small>
+          </label>
+          <label class="synth-mode-option">
+            <input type="radio" name="synth-trigger-mode" value="envelope">
+            <span class="synth-mode-title">Envelope (ADSR)</span>
+            <small>nota momentánea con curva</small>
+          </label>
+        </div>
+
+        <details class="synth-adsr" open>
+          <summary>Curva ADSR (arrastra los vértices A, D/S y R; los rombos curvan cada tramo)</summary>
+          <label class="fm-control">Aplicar a
+            <select id="adsr-astro"></select>
+          </label>
+          <div id="adsr-grafico" class="adsr-grafico"></div>
+          <p class="adsr-valores" id="adsr-valores">—</p>
+        </details>
+
+        <details class="synth-fm" open>
+          <summary>Conexión entre astros (FM · estilo Operator)</summary>
+          <label class="fm-control">Algoritmo
+            <select id="synth-fm-algoritmo"></select>
+          </label>
+          <div id="fm-galeria" class="fm-galeria" title="Todas las combinaciones: clic para elegir"></div>
+          <label class="fm-control">Profundidad FM <span id="synth-fm-profundidad-val">2.0</span>
+            <input type="range" id="synth-fm-profundidad" min="0" max="20" step="0.1" value="2">
+          </label>
+          <div id="fm-esquema" class="fm-esquema"></div>
+        </details>
+
+        <details class="synth-armonicos">
+          <summary>Armónicos pares/impares (onda personalizada)</summary>
+          <label class="fm-control">Astro
+            <select id="arm-astro"></select>
+          </label>
+          <div class="adsr-grid">
+            <label>Pares <span id="arm-pares-val">50%</span>
+              <input type="range" id="arm-pares" min="0" max="1" step="0.01" value="0.5">
+            </label>
+            <label>Impares <span id="arm-impares-val">50%</span>
+              <input type="range" id="arm-impares" min="0" max="1" step="0.01" value="0.5">
+            </label>
+          </div>
+          <div id="arm-grafica" class="arm-grafica"></div>
+          <p class="seq-hint">Al mover los sliders, la forma de onda del astro cambia a "Personalizada". También puedes arrastrar las barras de la gráfica.</p>
+        </details>
+
+        <details class="synth-sequencer" open>
+          <summary>Secuenciador</summary>
+          <div class="seq-grid">
+            <label>BPM <span id="synth-bpm-val">120</span>
+              <input type="range" id="synth-bpm" min="10" max="999" step="1" value="120">
+              <input type="number" id="synth-bpm-num" min="10" max="999" step="1" value="120" title="Escribir BPM">
+            </label>
+            <label>Gate <span id="synth-gate-val">70%</span>
+              <input type="range" id="synth-gate" min="0.05" max="1" step="0.05" value="0.7">
+            </label>
+            <label class="seq-figura">Figura de ejecución
+              <select id="synth-figura"></select>
+            </label>
+          </div>
+          <div class="seq-actions">
+            <button type="button" id="seq-play">▶ Play</button>
+            <button type="button" id="seq-stop">■ Stop</button>
+          </div>
+
+          <div class="seq-sub">
+            <span class="seq-sub-titulo">✦ Alinear astros</span>
+            <div class="seq-actions">
+              <button type="button" id="seq-orden-directo" title="Orden Sol → Plutón">☉→♇</button>
+              <button type="button" id="seq-orden-inverso" title="Orden Plutón → Sol">♇→☉</button>
+              <button type="button" id="seq-orden-aleatorio" title="Orden aleatorio">🎲 Azar</button>
+              <button type="button" id="seq-orden-region" title="Agrupar los astros cuyas notas caen en regiones tonales cercanas">≈ Región</button>
+            </div>
+          </div>
+
+          <div class="seq-sub">
+            <span class="seq-sub-titulo">✦ Ritmos</span>
+            <div id="seq-pesos" class="seq-pesos"></div>
+            <div class="seq-actions">
+              <button type="button" id="seq-ritmos-azar" title="Asignar una figura al azar a cada astro según los pesos">🎲 Ritmos aleatorios</button>
+              <button type="button" id="seq-reset-figuras" title="Todas las filas vuelven a la figura global (=)">♩ Unificar ritmo</button>
+            </div>
+            <p class="seq-hint">Clic en una figura cambia su peso (×0–×3): cuanto mayor, más aparece al aleatorizar; ×0 la excluye.</p>
+          </div>
+
+          <div class="seq-sub">
+            <span class="seq-sub-titulo">✦ Ritmos guardados</span>
+            <div class="seq-actions">
+              <button type="button" id="ritmo-guardar" title="Guardar el patrón rítmico actual (la figura de cada astro y su alineación)">✚ Guardar ritmo actual</button>
+            </div>
+            <div id="ritmos-lista" class="ritmos-lista"></div>
+            <p class="seq-hint">↔ invierte la dirección · ◑ empieza desde la mitad · − reduce y ＋ aumenta cada figura al siguiente símbolo rítmico · ⧉ duplica · 📸 recaptura · ⊕ manda el ritmo a la cadena.</p>
+          </div>
+
+          <div class="seq-sub">
+            <span class="seq-sub-titulo">✦ Cadena de ritmos</span>
+            <label class="ritmos-cadena-toggle">
+              <input type="checkbox" id="ritmos-usar-cadena">
+              <span>Encadenar ritmos al reproducir</span>
+            </label>
+            <div id="ritmos-cadena" class="ritmos-cadena"></div>
+            <div class="seq-actions">
+              <button type="button" id="ritmos-cadena-limpiar" title="Quitar todos los eslabones de la cadena">✕ Vaciar cadena</button>
+            </div>
+            <p class="seq-hint">Cada eslabón toca su ritmo ×N vueltas completas del recorrido de astros; al terminar el último, la cadena vuelve a empezar. Un mismo ritmo puede repetirse en varios eslabones. Al parar vuelve el patrón que tenías a mano.</p>
+          </div>
+
+          <p class="seq-hint">Reordena los planetas con ↑↓ en cada fila. Solo los marcados participan.</p>
+        </details>
+
+        <div class="synth-rows-header">
+          <span></span>
+          <span>Planeta</span>
+          <span title="Octava relativa">Oct</span>
+          <span title="Forma de onda">Onda</span>
+          <span title="Volumen individual">Vol</span>
+          <span title="Pulsar para tocar (envelope)">Trig</span>
+          <span class="synth-fig-col" title="Figura rítmica por astro (= usa la global)">Fig</span>
+          <span>Nota</span>
+        </div>
+        <div class="synth-rows" id="synth-planets"></div>
+
+        <div class="synth-actions">
+          <button type="button" id="synth-play-all">▶ Todos</button>
+          <button type="button" id="synth-stop-all">■ Detener</button>
+        </div>
+        <p class="synth-hint">
+          En modo Drone, los checks son toggles. En modo Envelope, el check dispara attack/release y los botones <strong>▶</strong> son momentáneos. Clic en planeta del canvas también funciona.
+          Los astros que comparten región tonal se pintan con el color de esa región.
+        </p>
+      </details>
+
+      <details class="panel-section panel-colapsable" id="seccion-piano">
+        <summary class="seccion-titulo">🎹 Piano microtonal <span class="colapsable-hint">(clic para ocultar/mostrar)</span></summary>
+
+        <label class="synth-master-toggle">
+          <input type="checkbox" id="piano-activo">
+          <span>Activar modo piano (independiente del secuenciador)</span>
+        </label>
+
+        <span class="seq-sub-titulo">✦ Astros como instrumento</span>
+        <div id="piano-astros" class="piano-astros"></div>
+        <div class="seq-actions">
+          <button type="button" id="piano-sel-todos" title="Usar los 10 astros">✦ Todos</button>
+          <button type="button" id="piano-sel-ninguno" title="Quitar todos">∅ Ninguno</button>
+          <button type="button" id="piano-panico" title="Cortar todas las notas que estén sonando">■ Soltar todo</button>
+        </div>
+        <p class="piano-estado" id="piano-estado">—</p>
+
+        <div class="synth-modes piano-ruteo">
+          <label class="synth-mode-option">
+            <input type="radio" name="piano-ruteo" value="paralelo">
+            <span class="synth-mode-title">Paralelo</span>
+            <small>suma aditiva de timbres</small>
+          </label>
+          <label class="synth-mode-option">
+            <input type="radio" name="piano-ruteo" value="serie">
+            <span class="synth-mode-title">Serie (FM)</span>
+            <small>cadena de modulación</small>
+          </label>
+        </div>
+
+        <div class="piano-controles">
+          <label>Astro en foco
+            <select id="piano-astro-foco"></select>
+          </label>
+          <label>Afinación del teclado
+            <select id="piano-anclaje">
+              <option value="escala">Escala (regiones)</option>
+              <option value="astro">Anclada al astro en foco</option>
+            </select>
+          </label>
+          <label>Octava inicial
+            <input type="number" id="piano-octava-base" min="-6" max="6" step="1" value="-1">
+          </label>
+          <label>Octavas visibles
+            <input type="number" id="piano-octavas" min="1" max="10" step="1" value="2">
+          </label>
+          <label class="piano-vel">Velocidad <span id="piano-vel-val">80%</span>
+            <input type="range" id="piano-velocidad" min="0" max="1" step="0.01" value="0.8">
+          </label>
+          <label class="piano-vel" title="Balancea el volumen general del piano contra el del secuenciador">Volumen del piano <span id="piano-vol-general-val">100%</span>
+            <input type="range" id="piano-volumen-general" min="0" max="1" step="0.01" value="1">
+          </label>
+        </div>
+
+        <div class="seq-actions">
+          <button type="button" id="piano-ajustar-rango" title="Muestra completos el extremo grave y el agudo de los astros activos y las notas que estén sonando">🔍 Ajustar al rango en uso</button>
+        </div>
+
+        <div class="piano-opciones">
+          <label title="Las notas no se sueltan hasta quitar el pedal">
+            <input type="checkbox" id="piano-sostener"> Sostener
+          </label>
+          <label title="Tocar con las filas zxcvbnm / asdfghjkl / qwertyuiop; , y . cambian de octava">
+            <input type="checkbox" id="piano-teclado-pc"> Teclado PC
+          </label>
+          <label title="Una tecla del controlador = un microtono (Do4 = primer paso)">
+            <input type="checkbox" id="piano-midi" checked> Entrada MIDI
+          </label>
+        </div>
+
+        <div id="piano-teclado" class="piano-teclado"></div>
+        <p class="piano-info" id="piano-info">Pasa el ratón sobre una tecla para ver su región, nota y frecuencia.</p>
+
+        <p class="seq-hint">
+          Cada tecla es una <b>región</b> de la rueda: una octava = <b>una vuelta completa</b>
+          (tantas teclas como microtonos). Las líneas doradas marcan dónde termina cada octava.
+          Las teclas claras y oscuras son las notas del piano de 12; las violetas son las
+          <b>intermedias</b> que solo existen en la escala microtonal. El símbolo de cada astro
+          y su aguja muestran en qué región y octava cae su afinación exacta; si aparece
+          ‹ o › es que su octava queda fuera del rango dibujado (sube <b>Octavas visibles</b>
+          o usa <b>🔍 Ajustar al rango en uso</b>). Sobre el teclado, la rueda hace zoom
+          (centrado en el cursor) y Shift+rueda desplaza el rango sin cambiar el zoom.
+          Los astros aportan timbre, octava, volumen y ADSR; el teclado aporta la altura.
+          Con <b>Teclado PC</b> activo las letras tocan notas y no ejecutan los atajos de la carta.
+        </p>
+      </details>
+
+      <section class="panel-section">
+        <h2>🎼 Notas y regiones</h2>
+        <div class="notas-grid">
+          <label>Nota raíz (en Aries)
+            <select id="select-nota-raiz"></select>
+          </label>
+          <label>Orden por intervalo
+            <select id="select-intervalo"></select>
+          </label>
+          <label>Microtonos (máx. 96)
+            <input type="number" id="input-microtonos" min="1" max="96" step="1" value="24">
+          </label>
+        </div>
+        <p class="synth-hint">
+          Default: cromáticos ascendentes con Do en Aries. Con intervalos que no recorren
+          las 12 notas (2M, 3m...), al repetirse una nota se toma la siguiente libre.
+        </p>
+      </section>
+
+      <section class="panel-section">
+        <h2>🌠 Sistema solar</h2>
+        <div id="trazos-modo" class="trazos-modo">
+          <button type="button" data-modo="orbita" title="Cada astro marcado deja la estela de su órbita">◌ Órbita</button>
+          <button type="button" data-modo="vertice" title="Se traza el vértice (centro geométrico) que generan dos o más astros marcados al orbitar">✦ Vértice</button>
+        </div>
+        <div id="trazos-astros" class="trazos-astros"></div>
+        <div class="trazos-controles">
+          <label>Duración del trazo (s, 0 = permanente)
+            <input type="number" id="trazos-duracion" min="0" max="86400" step="1" value="60">
+          </label>
+          <button type="button" id="trazos-limpiar" title="Borrar todas las estelas">✕ Limpiar</button>
+        </div>
+        <p class="synth-hint">
+          <b>Órbita</b>: los astros marcados dibujan su estela al desplazarse con la vista
+          "Sistema solar" de fondo. <b>Vértice</b>: se traza el recorrido del vértice
+          (centro geométrico) generado por dos o más astros marcados al orbitar.
+          Rueda = zoom hacia el cursor, Shift+rueda = desplazar el tiempo (en EXPLORACIÓN),
+          arrastrar = mover la vista, doble clic = restablecer.
+        </p>
+      </section>
+
+      <section class="panel-section">
+        <h2>🎵 Bancos de fechas</h2>
+        <div class="bank-toolbar">
+          <button type="button" id="bank-add" title="Crear banco con la fecha y configuración actuales">+ Nuevo</button>
+          <button type="button" id="bank-export">⤓ Exportar</button>
+          <button type="button" id="bank-import">⤒ Importar</button>
+          <button type="button" id="bank-toggle-ocultos" title="Mostrar / esconder los bancos ocultos">👁 Ocultos</button>
+          <input type="file" id="bank-import-file" accept="application/json" hidden>
+        </div>
+        <div id="bank-list" class="bank-list"></div>
+        <p class="bank-hint">
+          📸 captura la configuración actual (octavas, microtonos, modo musical) como override del banco.
+          ∅ quita los overrides y vuelve a usar la config global.
+        </p>
+      </section>
+
+      <section class="panel-section">
+        <h2>🎛 MIDI</h2>
+        <div class="midi-toolbar">
+          <button type="button" id="midi-enable">Activar MIDI</button>
+          <span id="midi-status" class="midi-status midi-off">Inactivo</span>
+        </div>
+        <div id="midi-devices" class="midi-devices"></div>
+        <label class="midi-astros-toggle">
+          <input type="checkbox" id="midi-astros" checked>
+          <span>Mapear astros a C4–A4 (Do4 = Sol, Do#4 = Luna … La4 = Plutón)</span>
+        </label>
+        <p class="midi-hint">
+          Asigna una nota MIDI a cada banco con el botón <strong>Asignar</strong> de su tarjeta. Al recibir esa nota se dispara el banco. En modo Envelope, MIDI noteOn/noteOff disparan attack/release de los planetas activos.
+        </p>
+
+        <div class="midi-mapeos-bloque">
+          <span class="seq-sub-titulo">✦ Mapeo de parámetros</span>
+          <div id="midi-mapeos" class="midi-mapeos"></div>
+          <p class="midi-aviso" id="midi-mapeos-aviso" style="display:none"></p>
+          <p class="midi-hint">
+            <b>Rango</b> reparte notas consecutivas desde la que aprendas: la primera
+            elige la opción 1, la siguiente la 2… (2 notas para el transporte, 12 para
+            la raíz, 10 para el intervalo, una por ritmo guardado). En el
+            <b>Transporte</b>, ▶ Play relanza siempre desde el primer paso —también si
+            ya estaba sonando— y ■ Detener corta.
+            <b>Libre</b> despliega la lista de
+            opciones y le pones a cada una <em>el mensaje que tú quieras</em>: clic en
+            su pastilla y toca una nota <em>o mueve un control</em>; lo que llegue
+            queda asignado. Las que dejes en «—» no responden, así que puedes mapear
+            solo las raíces o los intervalos que te interesen.
+            <b>CC</b> reparte el recorrido de una perilla o fader entre todas las
+            opciones.
+          </p>
+          <p class="midi-hint">
+            Cuando una opción queda mapeada a un <b>CC</b> aparecen los campos
+            <em>valor min – max</em>: ese es el tramo que la dispara, y es lo que
+            permite repartir un mismo control entre varias opciones. Un botón que
+            manda CC 20 con 127 al pulsarlo y 0 al soltarlo elige una opción con el
+            tramo 64–127 y otra con el 0–63 (los que pone al aprender), y un fader
+            se puede cortar en los tramos que quieras. El disparo es al <em>entrar</em>
+            en el tramo, así que recorrerlo no reaplica en cada paso.
+            Cada ritmo guardado puede además llevar su nota desde el botón 🎹 de su
+            tarjeta: es la misma que aparece aquí en modo Libre, y funciona aunque el
+            parámetro esté en Off.
+            Los mapeos se leen <em>antes</em> que el piano: si comparten mensajes,
+            dales canales distintos.
+          </p>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <h2>Astros</h2>
+        <table class="data-table">
+          <thead><tr><th>Astro</th><th>Posición</th></tr></thead>
+          <tbody id="tabla-astros"></tbody>
+        </table>
+      </section>
+
+      <section class="panel-section">
+        <h2>Casas</h2>
+        <table class="data-table">
+          <thead><tr><th>Casa</th><th>Posición</th></tr></thead>
+          <tbody id="tabla-casas"></tbody>
+        </table>
+      </section>
+
+      <section class="panel-section">
+        <h2>Entrada manual</h2>
+        <form id="form-manual" class="manual-form">
+          <div class="row">
+            <label>Año
+              <input type="number" id="input-anio" min="1" step="1" value="2026">
+            </label>
+            <label>Era
+              <select id="select-era">
+                <option value="dc">d.C.</option>
+                <option value="ac">a.C.</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
+            <label>Mes
+              <input type="number" id="input-mes" min="1" max="12" step="1" value="4">
+            </label>
+            <label>Día
+              <input type="number" id="input-dia" min="1" max="31" step="1" value="4">
+            </label>
+          </div>
+          <label>Hora
+            <input type="time" id="input-hora" step="1" value="00:00:00">
+          </label>
+
+          <fieldset class="geo-busqueda">
+            <legend>Buscar lugar (País · Estado · Ciudad)</legend>
+            <div class="row">
+              <label>Ciudad
+                <input type="text" id="input-buscar-lugar" placeholder="ej. Guadalajara">
+              </label>
+              <button type="button" id="btn-buscar-lugar" class="geo-btn">🔍 Buscar</button>
+            </div>
+            <div id="geo-resultados" class="geo-resultados"></div>
+            <div class="row">
+              <label>País
+                <input type="text" id="input-pais" placeholder="—">
+              </label>
+              <label>Estado
+                <input type="text" id="input-estado" placeholder="—">
+              </label>
+            </div>
+            <label>Ciudad seleccionada
+              <input type="text" id="input-ciudad" placeholder="—">
+            </label>
+          </fieldset>
+
+          <label>Ubicación (etiqueta)
+            <input type="text" id="input-ubicacion" value="CDMX">
+          </label>
+          <div class="row">
+            <label>Latitud
+              <input type="number" id="input-latitud" step="any" value="19.4326">
+            </label>
+            <label>Longitud
+              <input type="number" id="input-longitud" step="any" value="-99.1332">
+            </label>
+          </div>
+          <label>Zona horaria (UTC)
+            <input type="number" id="input-zona" step="0.5" value="-6">
+          </label>
+          <button type="submit">Aplicar</button>
+        </form>
+      </section>
+
+      <section class="panel-section panel-controls">
+        <h2>Controles</h2>
+        <dl>
+          <dt>D / A / E</dt><dd>Modo DEMO / AHORA / EXPLORACIÓN</dd>
+          <dt>M</dt><dd>Cromático ↔ círculo de quintas</dd>
+          <dt>+ / -</dt><dd>Microtonos</dd>
+          <dt>Rueda</dt><dd>Desplazar tiempo (en EXPLORACIÓN; con el Sistema solar de fondo usa Shift+rueda)</dd>
+          <dt>[ / ]</dt><dd>Cambiar paso temporal</dd>
+          <dt>0</dt><dd>Volver al presente</dd>
+          <dt>Espacio</dt><dd>Pausa / reanuda (en AHORA)</dd>
+          <dt>Clic en planeta</dt><dd>Alternar su sonido</dd>
+        </dl>
+      </section>
+
+    </aside>
+
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/helpers.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/theme.js"></script>
+  <script src="js/colors.js"></script>
+  <script src="js/synth.js"></script>
+  <script src="js/rhythms.js"></script>
+  <script src="js/piano.js"></script>
+  <script src="js/audio-outputs.js"></script>
+  <script src="js/banks.js"></script>
+  <script src="js/mixer.js"></script>
+  <script src="js/synth-editor.js"></script>
+  <script src="js/midi-map.js"></script>
+  <script src="js/midi.js"></script>
+  <script src="js/ephemeris.js"></script>
+  <script src="js/wheel.js"></script>
+  <script src="js/chart.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/geo.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/interaction.js"></script>
+  <script src="js/sketch.js"></script>
+</body>
+</html>
