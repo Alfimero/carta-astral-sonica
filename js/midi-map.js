@@ -2,10 +2,11 @@
 // midi-map.js — mapeo de parámetros musicales a MIDI
 // =========================================================
 //
-// Cuatro parámetros del programa se pueden manejar desde el
+// Cinco parámetros del programa se pueden manejar desde el
 // controlador sin tocar el panel:
 //
-//   transporte → ▶ Play / ■ Detener del secuenciador
+//   transporte  → ▶ Play / ■ Detener del secuenciador
+//   transporte2 → ▶ Play / ■ Detener del Secuenciador 2
 //   raiz       → nota raíz en Aries (12 valores)
 //   intervalo  → orden por intervalo (INTERVALOS_ORDEN, 10 valores)
 //   ritmo      → cargar uno de los ritmos guardados (rhythms.js)
@@ -78,6 +79,25 @@ const PARAMETROS_MIDI = [
       if (idx === 0) synth.reiniciarSecuencia();
       else synth.detenerSecuencia();
       if (typeof actualizarUISintetizador === "function") actualizarUISintetizador();
+    }
+  },
+  {
+    id: "transporte2",
+    nombre: "Transporte Sec. 2",
+    detalle: "Play / Detener del Secuenciador 2",
+    opciones() {
+      return [
+        { valor: 0, nombre: "▶ Play Sec. 2 (desde el inicio)" },
+        { valor: 1, nombre: "■ Detener Sec. 2" }
+      ];
+    },
+    indice() {
+      return (typeof secuenciador2 !== "undefined" && secuenciador2.activa) ? 0 : 1;
+    },
+    aplicar(idx) {
+      if (typeof secuenciador2 === "undefined") return;
+      if (idx === 0) secuenciador2.reiniciar();
+      else secuenciador2.detener();
     }
   },
   {
@@ -171,6 +191,7 @@ const mapeoMIDI = {
   // { tipo: "nota", nota } | { tipo: "cc", cc, min, max }.
   cfg: {
     transporte: { modo: "off", notaBase: 12, cc: 23, canal: 0, asignaciones: {} },  // C0
+    transporte2: { modo: "off", notaBase: 14, cc: 24, canal: 0, asignaciones: {} }, // D0
     raiz:       { modo: "off", notaBase: 36, cc: 20, canal: 0, asignaciones: {} },  // C2
     intervalo:  { modo: "off", notaBase: 48, cc: 21, canal: 0, asignaciones: {} },  // C3
     ritmo:      { modo: "off", notaBase: 24, cc: 22, canal: 0, asignaciones: {} }   // C1

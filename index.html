@@ -6,8 +6,12 @@
   <title>Carta Astral Sónica</title>
   <link rel="stylesheet" href="style.css">
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.browser.js"></script>
+  <!-- Librerías: primero la copia local (vendor/, funciona sin internet;
+       los lanzadores la descargan), si no existe se usa el CDN. -->
+  <script src="vendor/p5.min.js"></script>
+  <script>window.p5 || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"><\/script>')</script>
+  <script src="vendor/astronomy.browser.js"></script>
+  <script>window.Astronomy || document.write('<script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.browser.js"><\/script>')</script>
 
   <style>
     /* Visor de errores temporal — quitar cuando funcione todo */
@@ -178,7 +182,6 @@
             <select id="adsr-astro"></select>
           </label>
           <div id="adsr-grafico" class="adsr-grafico"></div>
-          <p class="adsr-valores" id="adsr-valores">—</p>
         </details>
 
         <details class="synth-fm" open>
@@ -211,7 +214,7 @@
         </details>
 
         <details class="synth-sequencer" open>
-          <summary>Secuenciador</summary>
+          <summary>Secuenciador 1</summary>
           <div class="seq-grid">
             <label>BPM <span id="synth-bpm-val">120</span>
               <input type="range" id="synth-bpm" min="10" max="999" step="1" value="120">
@@ -296,23 +299,124 @@
         </p>
       </details>
 
+      <details class="panel-section panel-colapsable" id="seccion-secuenciador2">
+        <summary class="seccion-titulo">🥁 Secuenciador 2 <span class="colapsable-hint">(clic para ocultar/mostrar)</span></summary>
+
+        <p class="seq-hint">Un segundo secuenciador independiente: sus propios astros, orden, ritmo, BPM, conexión FM y conjunto de timbre. Suena a la vez que el Secuenciador 1 (el de la sección 🎹 Sintetizador) y tiene su canal en el mezclador.</p>
+
+        <div class="seq-actions">
+          <button type="button" id="sec2-play">▶ Play</button>
+          <button type="button" id="sec2-stop">■ Stop</button>
+          <button type="button" id="sec2-play-ambos" title="Arranca los dos secuenciadores alineados en el mismo instante">▶▶ Ambos</button>
+          <button type="button" id="sec2-stop-ambos" title="Detiene los dos secuenciadores">■■ Ambos</button>
+        </div>
+
+        <div class="seq-grid">
+          <label>BPM <span id="sec2-bpm-val">90</span>
+            <input type="range" id="sec2-bpm" min="10" max="999" step="1" value="90">
+            <input type="number" id="sec2-bpm-num" min="10" max="999" step="1" value="90" title="Escribir BPM">
+          </label>
+          <label>Gate <span id="sec2-gate-val">60%</span>
+            <input type="range" id="sec2-gate" min="0.05" max="1" step="0.05" value="0.6">
+          </label>
+          <label class="seq-figura">Figura de ejecución
+            <select id="sec2-figura"></select>
+          </label>
+        </div>
+        <label class="sec2-seguir" title="Usa el mismo tempo que el Secuenciador 1 (las figuras siguen siendo propias)">
+          <input type="checkbox" id="sec2-seguir-bpm"> Seguir el BPM del Secuenciador 1
+        </label>
+
+        <div class="piano-controles">
+          <label>Conexión FM
+            <select id="sec2-fm"></select>
+          </label>
+          <label>Afinación
+            <select id="sec2-modo">
+              <option value="continuo">Continuo</option>
+              <option value="region">Región tonal</option>
+            </select>
+          </label>
+          <label class="piano-vel">Velocidad <span id="sec2-vel-val">80%</span>
+            <input type="range" id="sec2-velocidad" min="0" max="1" step="0.01" value="0.8">
+          </label>
+          <label class="piano-vel">Volumen del Secuenciador 2 <span id="sec2-vol-val">100%</span>
+            <input type="range" id="sec2-volumen" min="0" max="1" step="0.01" value="1">
+          </label>
+        </div>
+
+        <div class="seq-actions">
+          <button type="button" id="sec2-timbre" title="Ganancia, octava, onda, armónicos, filtros, ADSR… de cada astro de este secuenciador">🎛 Timbre (conjunto)</button>
+          <button type="button" id="sec2-copiar-ritmo" title="Copiar las figuras y el orden de astros del Secuenciador 1">⇐ Ritmo del Sec. 1</button>
+        </div>
+
+        <div class="seq-sub">
+          <span class="seq-sub-titulo">✦ Alinear astros</span>
+          <div class="seq-actions">
+            <button type="button" id="sec2-orden-directo" title="Orden Sol → Plutón">☉→♇</button>
+            <button type="button" id="sec2-orden-inverso" title="Orden Plutón → Sol">♇→☉</button>
+            <button type="button" id="sec2-orden-aleatorio" title="Orden aleatorio">🎲 Azar</button>
+            <button type="button" id="sec2-orden-region" title="Agrupar los astros de regiones tonales cercanas">≈ Región</button>
+            <button type="button" id="sec2-todos" title="Marcar los 10 astros">✦ Todos</button>
+            <button type="button" id="sec2-ninguno" title="Desmarcar todos">∅ Ninguno</button>
+          </div>
+        </div>
+
+        <div class="seq-sub">
+          <span class="seq-sub-titulo">✦ Ritmos</span>
+          <div class="seq-actions">
+            <button type="button" id="sec2-ritmos-azar" title="Figura al azar para cada astro (usa los pesos del Secuenciador 1)">🎲 Ritmos aleatorios</button>
+            <button type="button" id="sec2-reset-figuras" title="Todas las filas vuelven a la figura global (=)">♩ Unificar ritmo</button>
+          </div>
+        </div>
+
+        <div id="sec2-filas" class="sec2-filas"></div>
+        <div id="sec2-conjunto" class="conjunto-astro"></div>
+        <p class="seq-hint">Solo los astros marcados tocan. Clic en el <b>nombre</b> de un astro = ver y editar su conjunto. Reordena con ↑↓ o arrastrando el nombre: el orden define la secuencia y las cadenas FM (↳ = modulador del astro de arriba).</p>
+      </details>
+
       <details class="panel-section panel-colapsable" id="seccion-piano">
         <summary class="seccion-titulo">🎹 Piano microtonal <span class="colapsable-hint">(clic para ocultar/mostrar)</span></summary>
 
+        <!-- Cuatro columnas: en el panel lateral se apilan; en la bandeja
+             inferior quedan fijas lado a lado, cada una con su propio
+             desplazamiento (ver .dock-contenido .piano-columnas). -->
+        <div class="piano-columnas">
+        <div class="piano-col piano-col-instrumentos">
         <label class="synth-master-toggle">
           <input type="checkbox" id="piano-activo">
           <span>Activar modo piano (independiente del secuenciador)</span>
         </label>
 
-        <span class="seq-sub-titulo">✦ Astros como instrumento</span>
+        <div class="piano-bloque-instrumentos">
+        <span class="seq-sub-titulo">✦ Instrumentos</span>
+        <div id="piano-controladores" class="piano-controladores"></div>
+        <div id="piano-instrumentos" class="piano-instrumentos"></div>
+        <div class="seq-actions">
+          <button type="button" id="piano-inst-agregar" title="Nuevo instrumento con su propio controlador, astros y timbre">✚ Añadir instrumento</button>
+        </div>
+        <p class="seq-hint">Cada instrumento escucha su propio controlador MIDI (y canal), toca con su propio grupo de astros y tiene su propio sintetizador: el botón 🎛 edita el <b>conjunto</b> de cada astro (ganancia, octava, onda, armónicos, filtros, pan, vibrato, ADSR). «Todos los controladores libres» recibe los que no tengan instrumento propio. El teclado en pantalla y el del ordenador tocan el instrumento marcado con ◉.</p>
+        </div>
+        </div>
+
+        <div class="piano-col piano-col-astros">
+        <span class="seq-sub-titulo">✦ Astros de <span id="piano-inst-actual">—</span></span>
+        <p class="seq-hint">☐ = el astro toca en este instrumento · clic en su <b>símbolo</b> = ver y editar su conjunto.</p>
         <div id="piano-astros" class="piano-astros"></div>
         <div class="seq-actions">
           <button type="button" id="piano-sel-todos" title="Usar los 10 astros">✦ Todos</button>
           <button type="button" id="piano-sel-ninguno" title="Quitar todos">∅ Ninguno</button>
           <button type="button" id="piano-panico" title="Cortar todas las notas que estén sonando">■ Soltar todo</button>
+          <button type="button" id="piano-inst-timbre" title="Editar el conjunto de timbre de este instrumento">🎛 Timbre</button>
         </div>
         <p class="piano-estado" id="piano-estado">—</p>
+        </div>
 
+        <div class="piano-col piano-col-conjunto">
+        <div id="piano-conjunto" class="conjunto-astro"></div>
+        </div>
+
+        <div class="piano-col piano-col-controles">
         <div class="synth-modes piano-ruteo">
           <label class="synth-mode-option">
             <input type="radio" name="piano-ruteo" value="paralelo">
@@ -345,7 +449,7 @@
           <label class="piano-vel">Velocidad <span id="piano-vel-val">80%</span>
             <input type="range" id="piano-velocidad" min="0" max="1" step="0.01" value="0.8">
           </label>
-          <label class="piano-vel" title="Balancea el volumen general del piano contra el del secuenciador">Volumen del piano <span id="piano-vol-general-val">100%</span>
+          <label class="piano-vel" title="Volumen del instrumento seleccionado (cada instrumento tiene su canal en el mezclador)">Volumen del instrumento <span id="piano-vol-general-val">100%</span>
             <input type="range" id="piano-volumen-general" min="0" max="1" step="0.01" value="1">
           </label>
         </div>
@@ -364,6 +468,11 @@
           <label title="Una tecla del controlador = un microtono (Do4 = primer paso)">
             <input type="checkbox" id="piano-midi" checked> Entrada MIDI
           </label>
+          <label title="Si tocas una tecla que no está a la vista, el teclado se desplaza solo para mostrarla">
+            <input type="checkbox" id="piano-seguir" checked> Seguir notas
+          </label>
+        </div>
+        </div>
         </div>
 
         <div id="piano-teclado" class="piano-teclado"></div>
@@ -378,7 +487,11 @@
           ‹ o › es que su octava queda fuera del rango dibujado (sube <b>Octavas visibles</b>
           o usa <b>🔍 Ajustar al rango en uso</b>). Sobre el teclado, la rueda hace zoom
           (centrado en el cursor) y Shift+rueda desplaza el rango sin cambiar el zoom.
-          Los astros aportan timbre, octava, volumen y ADSR; el teclado aporta la altura.
+          Los astros aportan su conjunto (timbre, octava, volumen, ADSR…); el teclado aporta la altura.
+          Al tocar, la tecla pulsada se pinta de dorado y un <b>punto del color de cada astro</b>
+          marca la tecla donde suena de verdad (la octava de su conjunto la desplaza); si algo
+          suena fuera del rango dibujado aparece <b>◀ n</b> o <b>n ▶</b> en el borde.
+          Con <b>Seguir notas</b> el teclado se desplaza solo hasta la tecla que tocas.
           Con <b>Teclado PC</b> activo las letras tocan notas y no ejecutan los atajos de la carta.
         </p>
       </details>
@@ -490,6 +603,26 @@
         </div>
       </section>
 
+      <section class="panel-section" id="seccion-arranque">
+        <h2>⚙ Arranque y rendimiento</h2>
+        <div class="arranque-opciones">
+          <label><input type="checkbox" id="arranque-audio"> Encender el audio y los astros al abrir</label>
+          <label><input type="checkbox" id="arranque-midi"> Activar MIDI al abrir</label>
+          <label title="Para equipos antiguos (p. ej. MacBook Pro 2012): canvas a resolución 1× y 30 cuadros por segundo"><input type="checkbox" id="arranque-ligero"> Modo ligero (equipos antiguos)</label>
+        </div>
+        <div class="seq-actions">
+          <button type="button" id="config-exportar" title="Descargar toda la configuración (sintetizador, piano, instrumentos, secuenciadores, bancos, ritmos, MIDI, tema…) en un archivo">⤓ Exportar configuración</button>
+          <button type="button" id="config-importar" title="Cargar un respaldo de configuración (reemplaza la actual)">⤒ Importar configuración</button>
+          <input type="file" id="config-importar-file" accept="application/json" hidden>
+        </div>
+        <p class="synth-hint">
+          Al abrir, todo queda encendido menos los secuenciadores. Si el navegador pide un clic
+          para el audio, aparece un aviso arriba; los lanzadores <b>iniciar-mac.command</b> e
+          <b>iniciar-windows.bat</b> abren Chrome de forma que suene sin clic. Exporta tu
+          configuración para respaldarla o pasarla a otra computadora.
+        </p>
+      </section>
+
       <section class="panel-section">
         <h2>Astros</h2>
         <table class="data-table">
@@ -596,8 +729,10 @@
   <script src="js/theme.js"></script>
   <script src="js/colors.js"></script>
   <script src="js/synth.js"></script>
+  <script src="js/timbre.js"></script>
   <script src="js/rhythms.js"></script>
   <script src="js/piano.js"></script>
+  <script src="js/sequencer2.js"></script>
   <script src="js/audio-outputs.js"></script>
   <script src="js/banks.js"></script>
   <script src="js/mixer.js"></script>
@@ -611,6 +746,34 @@
   <script src="js/geo.js"></script>
   <script src="js/state.js"></script>
   <script src="js/interaction.js"></script>
+  <script src="js/arranque.js"></script>
+  <script>
+    // Verificación de carga: si algún script no llegó (servidor saturado,
+    // conexión cortada), el programa arrancaría roto con errores tipo
+    // "synth is not defined". Se recarga UNA vez sola; si vuelve a fallar
+    // se dice qué archivo falta en vez de dejar la página a medias.
+    (function () {
+      var requeridos = { "config.js": "numMicrotonos", "synth.js": "synth", "timbre.js": "crearMotorVoces",
+        "piano.js": "piano", "sequencer2.js": "secuenciador2", "midi.js": "MIDI", "state.js": "estado",
+        "interaction.js": "refrescarPanel", "arranque.js": "arranque", "p5": "p5", "astronomy-engine": "Astronomy" };
+      var faltan = [];
+      for (var archivo in requeridos) {
+        try { if (typeof eval(requeridos[archivo]) === "undefined") faltan.push(archivo); }
+        catch (e) { faltan.push(archivo); }
+      }
+      var clave = "cas-recarga-por-carga";
+      if (!faltan.length) { try { sessionStorage.removeItem(clave); } catch (e) {} return; }
+      var yaReintento = false;
+      try { yaReintento = sessionStorage.getItem(clave) === "1"; } catch (e) {}
+      if (!yaReintento) {
+        try { sessionStorage.setItem(clave, "1"); } catch (e) {}
+        location.reload();
+        return;
+      }
+      try { sessionStorage.removeItem(clave); } catch (e) {}
+      mostrarError("No cargaron: " + faltan.join(", ") + ". Revisa que el servidor siga abierto y recarga la página (Ctrl+R / Cmd+R).", "carga", 0, 0);
+    })();
+  </script>
   <script src="js/sketch.js"></script>
 </body>
 </html>

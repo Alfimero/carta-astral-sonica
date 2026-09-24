@@ -299,8 +299,11 @@ function restablecerCamaraSistema() {
 }
 
 // ¿El astro i está sonando ahora mismo?
-function astroSonando(i) {
+// soloSecuenciador1: ignora el Secuenciador 2 (las filas del panel del
+// Secuenciador 1 solo deben marcar lo suyo; la rueda marca ambos).
+function astroSonando(i, soloSecuenciador1) {
   if (typeof synth === "undefined" || !synth.enabled) return false;
+  if (!soloSecuenciador1 && typeof secuenciador2 !== "undefined" && secuenciador2.sonando(i)) return true;
   if (synth.envelopeActiva[i]) return true;
   if (synth.secuenciaActiva) return synth.sonandoEnSecuencia(i);
   if (synth.modoReproduccion === "acorde" && synth.modoTrigger === "drone") {

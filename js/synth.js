@@ -38,7 +38,9 @@ const synth = {
   modoTrigger: "drone",
   modoReproduccion: "acorde",
 
-  planetEnabled: new Array(10).fill(false),
+  // Todos marcados de inicio: al abrir el programa por primera vez ya
+  // hay astros listos para sonar (luego se recuerda la selección).
+  planetEnabled: new Array(10).fill(true),
   planetVolume: new Array(10).fill(0.5),
   planetPan: new Array(10).fill(0),        // -1 (izq) .. 1 (der), por astro
   planetMuted: new Array(10).fill(false),
@@ -282,6 +284,8 @@ const synth = {
 
   setPlanetEnabled(i, on) {
     this.planetEnabled[i] = on;
+    // Se persiste: al abrir el programa los astros vuelven marcados
+    this._guardarConfig();
 
     if (this.modoReproduccion === "secuencia") {
       if (!on && this._secStepActual === i) {
@@ -377,15 +381,13 @@ const synth = {
 
   setMuteSecuenciador(on) {
     this.secuenciadorMuted = !!on;
-    this._aplicarVolumenBusSecuenciador();
-    if (typeof piano !== "undefined") piano._aplicarVolumenBus();
+    this.refrescarVolumenesGrupos();
     this._guardarConfig();
   },
 
   setSoloSecuenciador(on) {
     this.secuenciadorSolo = !!on;
-    this._aplicarVolumenBusSecuenciador();
-    if (typeof piano !== "undefined") piano._aplicarVolumenBus();
+    this.refrescarVolumenesGrupos();
     this._guardarConfig();
   },
 
@@ -401,13 +403,26 @@ const synth = {
     this._guardarConfig();
   },
 
-  // El secuenciador se calla si el piano está soleado (y viceversa,
-  // ver piano._factorBus): son las dos "fuentes" del mezclador.
+  // Solo entre las FUENTES del mezclador (Secuenciador 1, Secuenciador 2
+  // y cada instrumento del piano): si alguna está soleada, las demás se
+  // callan. Cada fuente calcula su factor con esto.
+  haySoloEnGrupos() {
+    if (this.secuenciadorSolo) return true;
+    if (typeof secuenciador2 !== "undefined" && secuenciador2.solo) return true;
+    if (typeof piano !== "undefined" && piano.instrumentos.some(inst => inst.solo)) return true;
+    return false;
+  },
+
+  // Tras cambiar un mute/solo de grupo hay que recalcular TODOS los buses
+  refrescarVolumenesGrupos() {
+    this._aplicarVolumenBusSecuenciador();
+    if (typeof secuenciador2 !== "undefined") secuenciador2._aplicarVolumenBus();
+    if (typeof piano !== "undefined") piano._aplicarVolumenBuses();
+  },
+
   _factorBusSecuenciador() {
     if (this.secuenciadorMuted) return 0;
-    const pianoSolo = (typeof piano !== "undefined") && piano.solo;
-    const haySolo = this.secuenciadorSolo || pianoSolo;
-    return (haySolo && !this.secuenciadorSolo) ? 0 : 1;
+    return (this.haySoloEnGrupos() && !this.secuenciadorSolo) ? 0 : 1;
   },
 
   _aplicarVolumenBusSecuenciador() {
@@ -575,11 +590,17 @@ const synth = {
   // Onda personalizada del astro i a partir de sus armónicos pares e
   // impares. También la usa el modo piano para clonar el timbre.
   _ondaPersonalizada(i) {
+    return this._ondaDesdeArmonicos(this.armonicosPares[i], this.armonicosImpares[i]);
+  },
+
+  // Misma onda a partir de pesos sueltos: la usan los conjuntos de
+  // timbre (timbre.js), que guardan sus propios armónicos.
+  _ondaDesdeArmonicos(pares, impares) {
     const real = new Float32Array(NUM_ARMONICOS + 1);
     const imag = new Float32Array(NUM_ARMONICOS + 1);
     imag[1] = 1;  // fundamental siempre presente
     for (let n = 2; n <= NUM_ARMONICOS; n++) {
-      const peso = (n % 2 === 0) ? this.armonicosPares[i] : this.armonicosImpares[i];
+      const peso = (n % 2 === 0) ? pares : impares;
       imag[n] = peso / n;
     }
     return this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
@@ -791,7 +812,8 @@ const synth = {
       const salida = typeof salidasAudio !== "undefined" ? salidasAudio.nodoGain(this.salidaSecuenciador) : null;
       if (salida) this.nodoPanSecuenciador.connect(salida);
     }
-    if (typeof piano !== "undefined" && piano.nodoPan) piano._aplicarRuteoGrupo();
+    if (typeof piano !== "undefined") piano._aplicarRuteoGrupos();
+    if (typeof secuenciador2 !== "undefined") secuenciador2._aplicarRuteoGrupo();
   },
 
   // La profundidad escala con la frecuencia del astro DESTINO
@@ -977,7 +999,9 @@ const synth = {
     if (this.ctx) this._aplicarRuteo();
   },
 
-  iniciarSecuencia() {
+  // t0 (opcional): instante del AudioContext del primer paso. Lo usa
+  // "▶▶ Ambos" para arrancar los dos secuenciadores alineados.
+  iniciarSecuencia(t0) {
     if (this.secuenciaActiva) return;
     if (!this.ctx) this.init();
     if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
@@ -993,7 +1017,7 @@ const synth = {
     this._secStepActual = -1;
     this._secGrupoActual = null;
     this._secPendientes = [];
-    this._secNextTime = this.ctx.currentTime + 0.05;
+    this._secNextTime = (typeof t0 === "number") ? Math.max(t0, this.ctx.currentTime) : this.ctx.currentTime + 0.05;
     // La cadena de ritmos (rhythms.js) manda el patrón del primer
     // eslabón antes de programar el primer paso.
     if (typeof ritmos !== "undefined") ritmos.iniciarCadena();
@@ -1306,6 +1330,7 @@ const synth = {
         masterVolume: this.masterVolume,
         octavaPorPlaneta: this.octavaPorPlaneta.slice(),
         planetVolume: this.planetVolume.slice(),
+        planetEnabled: this.planetEnabled.slice(),
         planetPan: this.planetPan.slice(),
         planetMuted: this.planetMuted.slice(),
         planetSolo: this.planetSolo.slice(),
@@ -1367,6 +1392,10 @@ const synth = {
           const v = data.planetVolume[i];
           if (typeof v === "number") this.planetVolume[i] = clamp(v, 0, 1);
         }
+      }
+      // Astros marcados (antes no se guardaban: configs viejas → todos)
+      if (Array.isArray(data.planetEnabled) && data.planetEnabled.length === 10) {
+        for (let i = 0; i < 10; i++) this.planetEnabled[i] = !!data.planetEnabled[i];
       }
       if (Array.isArray(data.planetPan) && data.planetPan.length === 10) {
         for (let i = 0; i < 10; i++) {

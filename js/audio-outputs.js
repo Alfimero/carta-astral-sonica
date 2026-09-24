@@ -23,7 +23,8 @@
 //
 // synth.js y piano.js conectan sus propios nodos de grupo/astro a
 // salidasAudio.nodoGain(id) además de (o en vez de) sumar al Maestro;
-// ver synth._aplicarRuteo / synth._aplicarRuteoGrupos / piano._aplicarRuteoGrupo.
+// ver synth._aplicarRuteo / synth._aplicarRuteoGrupos / piano._aplicarRuteoGrupo /
+// secuenciador2._aplicarRuteoGrupo.
 // =========================================================
 
 const SALIDAS_STORAGE_KEY = "cas-salidas-v1";
@@ -71,10 +72,20 @@ const salidasAudio = {
       if (synth.salidaSecuenciador === id) { synth.salidaSecuenciador = null; tocado = true; }
       if (tocado && synth.ctx) { synth._aplicarRuteo(); synth._guardarConfig(); }
     }
-    if (typeof piano !== "undefined" && piano.salida === id) {
-      piano.salida = null;
-      if (synth.ctx) piano._aplicarRuteoGrupo();
-      piano._guardarConfig();
+    if (typeof piano !== "undefined") {
+      let tocado = false;
+      for (const inst of piano.instrumentos) {
+        if (inst.salida === id) { inst.salida = null; tocado = true; }
+      }
+      if (tocado) {
+        if (synth.ctx) piano._aplicarRuteoGrupos();
+        piano._guardarConfig();
+      }
+    }
+    if (typeof secuenciador2 !== "undefined" && secuenciador2.salida === id) {
+      secuenciador2.salida = null;
+      if (synth.ctx) secuenciador2._aplicarRuteoGrupo();
+      secuenciador2._guardarConfig();
     }
   },
 

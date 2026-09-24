@@ -5,12 +5,12 @@
 // Ventana flotante (mismo patrón que mixer.js) con una tarjeta por astro,
 // reuniendo TODOS sus parámetros de timbre en un solo lugar: octava, forma
 // de onda, volumen, armónicos, profundidad FM propia, filtros HPF/LPF y
-// ADSR (mini-gráfica arrastrable). No es un tercer origen de verdad: lee y
+// ADSR (el mismo editor del panel, con curvas). No es un tercer origen de verdad: lee y
 // escribe el MISMO estado que ya editan el panel lateral (synth.js) y el
-// mezclador — esta ventana es solo otro punto de entrada, para no tener
-// que navegar entre la sección Secuenciador y la sección Piano para tocar
-// el sonido de un astro (el piano toma prestado el mismo timbre por astro,
-// ver piano.js _crearOperador).
+// mezclador — esta ventana es solo otro punto de entrada al timbre del
+// Secuenciador 1. Los instrumentos del piano y el Secuenciador 2 tienen su
+// PROPIO conjunto de timbre por astro (timbre.js, ventana "Conjuntos de
+// timbre"); el ADSR de las tarjetas es el mismo crearEditorADSR del panel.
 // =========================================================
 
 const RACK_STORAGE_KEY = "cas-rack-sintetizadores-v1";
@@ -86,7 +86,7 @@ const rackSintetizadores = {
         <span>🎛 Rack de sintetizadores</span>
         <button type="button" class="rack-cerrar" title="Cerrar el rack de sintetizadores">✕</button>
       </div>
-      <p class="rack-hint">Un sintetizador por astro: el mismo timbre que usan el secuenciador y el piano al elegirlo como instrumento.</p>
+      <p class="rack-hint">Un sintetizador por astro: el timbre del Secuenciador 1 (y del mapeo MIDI de astros). Los instrumentos del piano y el Secuenciador 2 tienen su propio conjunto: botón 🎛 en su sección.</p>
       <div class="rack-canales"></div>
     `;
     document.body.appendChild(vent);
@@ -249,130 +249,24 @@ const rackSintetizadores = {
       synth.setPlanetLPFQ(i, parseFloat(e.target.value));
     });
 
-    // ADSR: mini-gráfica arrastrable (solo A/D/S/R; la curvatura de cada
-    // tramo sigue siendo exclusiva del editor grande del panel lateral)
-    this._crearMiniADSR(el.querySelector(".rack-adsr-mini"), i);
+    // ADSR: el editor completo del panel (vértices + rombos de curvatura)
+    this._crearEditorADSR(el.querySelector(".rack-adsr-mini"), i);
 
     this._actualizarValoresTarjeta(el, i);
     return el;
   },
 
-  // -------------------- Mini-editor ADSR arrastrable --------------------
-  // Geometría/fórmulas adaptadas (sin los rombos de curvatura) del editor
-  // grande de interaction.js (inicializarEditorADSR): misma escala sqrt en
-  // los handles y los mismos rangos (MAX_A/D/R), para que el gesto de
-  // arrastre se sienta igual en ambos lugares.
+  // -------------------- Editor ADSR --------------------
+  // El editor vive en timbre.js (crearEditorADSR): el mismo del panel del
+  // sintetizador, con vértices, rombos de curvatura y valores.
 
-  _crearMiniADSR(cont, i) {
-    if (!cont) return;
-    const W = 150, H = 64, PAD = 7;
-    const ZA = 34, ZD = 34, ZS = 16, ZR = 52;
-    const MAX_A = 3, MAX_D = 3, MAX_R = 5;
-    const yTop = PAD, yBase = H - PAD;
-
-    const fCurva = (u, c) => Math.pow(u, Math.pow(2, c * 2));
-    const xA = a => PAD + Math.sqrt(clamp(a, 0, MAX_A) / MAX_A) * ZA;
-    const xD = (a, d) => xA(a) + Math.sqrt(clamp(d, 0, MAX_D) / MAX_D) * ZD;
-    const xS = (a, d) => xD(a, d) + ZS;
-    const xR = (a, d, r) => xS(a, d) + Math.sqrt(clamp(r, 0, MAX_R) / MAX_R) * ZR;
-    const yS = s => yTop + (1 - clamp(s, 0, 1)) * (yBase - yTop);
-
-    const tramoCurvo = (xDe, yDe, xHasta, yHasta, c) => {
-      let s = "";
-      for (let k = 1; k <= 10; k++) {
-        const u = k / 10;
-        const x = xDe + (xHasta - xDe) * u;
-        const y = yDe + (yHasta - yDe) * fCurva(u, c);
-        s += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
-      }
-      return s;
-    };
-
-    const clavePara = (e, c) => [e.attack, e.decay, e.sustain, e.release, c.attack, c.decay, c.release].join(",");
-    let clave = "";
-
-    const render = () => {
-      const e = synth.adsrAstro[i];
-      const c = synth.adsrCurvaAstro[i];
-      clave = clavePara(e, c);
-
-      const x1 = xA(e.attack), x2 = xD(e.attack, e.decay);
-      const x3 = xS(e.attack, e.decay), x4 = xR(e.attack, e.decay, e.release);
-      const ys = yS(e.sustain);
-
-      let d = `M ${PAD} ${yBase}`;
-      d += tramoCurvo(PAD, yBase, x1, yTop, c.attack);
-      d += tramoCurvo(x1, yTop, x2, ys, c.decay);
-      d += ` L ${x3.toFixed(1)} ${ys.toFixed(1)}`;
-      d += tramoCurvo(x3, ys, x4, yBase, c.release);
-
-      cont.innerHTML = `
-        <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" class="rack-adsr-svg">
-          <line x1="${PAD}" y1="${yBase}" x2="${W - PAD}" y2="${yBase}" stroke="#555" stroke-width="1"/>
-          <path d="${d} Z" fill="rgba(138,118,201,0.18)" stroke="none"/>
-          <path d="${d}" fill="none" stroke="#8a76c9" stroke-width="1.6"/>
-          <circle class="rack-adsr-handle" data-h="a" cx="${x1.toFixed(1)}" cy="${yTop}" r="5"/>
-          <circle class="rack-adsr-handle" data-h="ds" cx="${x2.toFixed(1)}" cy="${ys.toFixed(1)}" r="5"/>
-          <circle class="rack-adsr-handle" data-h="r" cx="${x4.toFixed(1)}" cy="${yBase}" r="5"/>
-        </svg>
-      `;
-      conectarHandles();
-    };
-
-    const conectarHandles = () => {
-      const svg = cont.querySelector("svg");
-      if (!svg) return;
-
-      const aViewBox = ev => {
-        const svgVivo = cont.querySelector("svg") || svg;
-        const rect = svgVivo.getBoundingClientRect();
-        return {
-          x: (ev.clientX - rect.left) * (W / rect.width),
-          y: (ev.clientY - rect.top) * (H / rect.height)
-        };
-      };
-
-      svg.querySelectorAll(".rack-adsr-handle").forEach(handle => {
-        handle.addEventListener("pointerdown", ev => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const tipo = handle.dataset.h;
-
-          const mover = e2 => {
-            const p = aViewBox(e2);
-            const adsr = synth.adsrAstro[i];
-            if (tipo === "a") {
-              const t = clamp((p.x - PAD) / ZA, 0, 1);
-              synth.setADSRAstro(i, "attack", Math.max(0.001, t * t * MAX_A));
-            } else if (tipo === "ds") {
-              const t = clamp((p.x - xA(adsr.attack)) / ZD, 0, 1);
-              synth.setADSRAstro(i, "decay", Math.max(0.001, t * t * MAX_D));
-              const s = clamp(1 - (p.y - yTop) / (yBase - yTop), 0, 1);
-              synth.setADSRAstro(i, "sustain", s);
-            } else if (tipo === "r") {
-              const t = clamp((p.x - xS(adsr.attack, adsr.decay)) / ZR, 0, 1);
-              synth.setADSRAstro(i, "release", Math.max(0.001, t * t * MAX_R));
-            }
-            render();
-          };
-          const soltar = () => {
-            window.removeEventListener("pointermove", mover);
-            window.removeEventListener("pointerup", soltar);
-          };
-          window.addEventListener("pointermove", mover);
-          window.addEventListener("pointerup", soltar);
-        });
-      });
-    };
-
-    // Expuesto para el ciclo de refresco: solo redibuja si algo cambió
-    // realmente (evita reconstruir 10 SVGs en cada frame sin necesidad).
-    cont._rackRefrescarADSR = () => {
-      const e = synth.adsrAstro[i], c = synth.adsrCurvaAstro[i];
-      if (clavePara(e, c) !== clave) render();
-    };
-
-    render();
+  _crearEditorADSR(cont, i) {
+    crearEditorADSR(cont, {
+      adsr: () => synth.adsrAstro[i],
+      curva: () => synth.adsrCurvaAstro[i],
+      set: (param, v) => synth.setADSRAstro(i, param, v),
+      setCurva: (param, v) => synth.setADSRCurva(i, param, v)
+    });
   },
 
   // -------------------- Sincronización de controles --------------------
@@ -405,7 +299,7 @@ const rackSintetizadores = {
     if (onda && document.activeElement !== onda) onda.value = synth.formaOnda[i];
 
     const adsrCont = el.querySelector(".rack-adsr-mini");
-    if (adsrCont && adsrCont._rackRefrescarADSR) adsrCont._rackRefrescarADSR();
+    if (adsrCont && adsrCont._refrescarADSR) adsrCont._refrescarADSR();
   },
 
   _refrescarControles() {
