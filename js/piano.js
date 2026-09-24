@@ -20,6 +20,13 @@
 //
 // Es polifónico y crea sus propias voces: NO toca synth.planetEnabled
 // ni el secuenciador, así que puede tocarse encima de ellos.
+//
+// INSTRUMENTOS: el piano puede tener varios. Cada uno escucha un
+// controlador MIDI (y canal) propio, usa su propio grupo de astros y
+// tiene su propio CONJUNTO de timbre (timbre.js): ganancia, octava,
+// onda, armónicos, filtros, ADSR... por astro, independiente del
+// Secuenciador 1 y de los demás instrumentos. Cada instrumento es un
+// canal del mezclador.
 // =========================================================
 
 const PIANO_STORAGE_KEY = "cas-piano-v1";
@@ -42,40 +49,184 @@ const PIANO_OCTAVAS_MAX = 10;
 // Filas del teclado del ordenador → pasos consecutivos de la escala
 const PIANO_TECLAS_PC = "zxcvbnm" + "asdfghjkl" + "qwertyuiop";
 
+// Entrada MIDI de un instrumento: "*" = cualquier controlador que NO
+// tenga un instrumento propio; "" = ninguno (solo teclado en pantalla y
+// teclado del ordenador); cualquier otro valor = id de un input MIDI.
+const PIANO_ENTRADA_TODAS = "*";
+const PIANO_ENTRADA_NINGUNA = "";
+
+let _pianoContadorIds = 0;
+
+// Un instrumento = un controlador (entrada + canal) + un grupo de
+// astros + su propio conjunto de timbre (sintetizador independiente)
+// + su propio bus en el mezclador.
+function crearInstrumentoPiano(datos) {
+  const d = datos || {};
+  const inst = {
+    id: (typeof d.id === "string" && d.id) ? d.id : "inst-" + Date.now().toString(36) + "-" + (_pianoContadorIds++),
+    nombre: (typeof d.nombre === "string" && d.nombre.trim()) ? d.nombre.trim().slice(0, 40) : "Instrumento",
+    entrada: (typeof d.entrada === "string") ? d.entrada : PIANO_ENTRADA_TODAS,
+    entradaNombre: (typeof d.entradaNombre === "string") ? d.entradaNombre : "",
+    canal: (typeof d.canal === "number") ? clamp(Math.round(d.canal), 0, 16) : 0,
+    astrosSel: [true, false, false, false, false, false, false, false, false, false],
+    ruteo: (d.ruteo === "serie") ? "serie" : "paralelo",
+    timbre: sanearTimbre(d.timbre, timbreDesdeSynth()),
+    volumen: (typeof d.volumen === "number") ? clamp(d.volumen, 0, 1) : 1,
+    pan: (typeof d.pan === "number") ? clamp(d.pan, -1, 1) : 0,
+    muted: !!d.muted,
+    solo: !!d.solo,
+    salida: (typeof d.salida === "string" && d.salida) ? d.salida : null,
+    enMaster: d.enMaster !== false,
+
+    // Runtime (no se persiste)
+    bus: null,
+    nodoPan: null,
+    meter: null,
+    motor: null,
+    pendientes: new Set()   // pasos retenidos por el pedal de sostenido
+  };
+  if (Array.isArray(d.astrosSel) && d.astrosSel.length === 10) {
+    for (let k = 0; k < 10; k++) inst.astrosSel[k] = !!d.astrosSel[k];
+  }
+  inst.motor = crearMotorVoces({
+    timbre: () => inst.timbre,
+    destino: () => inst.bus,
+    maxVoces: 12
+  });
+  return inst;
+}
+
 const piano = {
-  activo: false,
+  // Encendido de fábrica: al abrir el programa el piano ya responde
+  activo: true,
 
-  // Astros que actúan como instrumento (uno o más)
-  astrosSel: [true, false, false, false, false, false, false, false, false, false],
+  // Instrumentos (al menos uno). instSel = el que tocan el teclado en
+  // pantalla y el del ordenador, y el que editan los controles de abajo.
+  instrumentos: [],
+  instSel: null,
 
-  ruteo: "paralelo",      // "paralelo" | "serie"
+  // Astro cuyo conjunto se muestra en el panel (null = ninguno)
+  astroConjunto: null,
+
   anclaje: "escala",      // "escala" | "astro"
   astroFoco: 0,           // astro cuya afinación se marca en el teclado
 
   octavaBase: -1,         // primera octava dibujada (relativa a Do4)
   octavas: 2,             // cuántas octavas se dibujan
   velocidad: 0.8,
-  volumenGeneral: 1,      // fader del bus del piano, para balancear contra el secuenciador
-  panValor: 0,            // -1 (izq) .. 1 (der), del bus completo del piano
-  muted: false,
-  solo: false,            // ver synth._factorBusSecuenciador: son las dos fuentes del mezclador
-  salida: null,           // id de salida virtual asignada (o null)
-  enMaster: true,         // si el piano suma al grupo Maestro
 
   sostener: false,        // pedal: las notas no se sueltan
+  seguirNotas: true,      // desplazar el teclado para mostrar lo que se toca
   tecladoPC: false,       // tocar con el teclado del ordenador
-  midiEntrada: true,      // tocar con MIDI
+  midiEntrada: true,      // tocar con MIDI (interruptor general)
   pasoBaseTeclado: 0,     // paso de la escala asignado a la tecla "z"
 
-  MAX_VOCES: 12,
   NOTA_MIDI_BASE: 60,     // Do4 = primer paso de la escala
 
-  bus: null,
-  nodoPan: null,
-  meterPiano: null,
-  _voces: new Map(),      // paso → voz activa
-  _pedalPendientes: new Set(),
   _teclasPC: new Map(),   // tecla física → paso que disparó
+
+  // -------------------- Instrumentos --------------------
+
+  instActual() {
+    return this.instrumentos.find(i => i.id === this.instSel) || this.instrumentos[0];
+  },
+
+  instrumento(id) {
+    return this.instrumentos.find(i => i.id === id) || null;
+  },
+
+  seleccionarInstrumento(id) {
+    if (!this.instrumento(id)) return;
+    this.instSel = id;
+    this._guardarConfig();
+  },
+
+  agregarInstrumento(entrada, entradaNombre) {
+    // Primer "Instrumento N" libre (contar los existentes repetía nombres
+    // al borrar o renombrar)
+    const usados = new Set(this.instrumentos.map(i => i.nombre));
+    let n = 1;
+    while (usados.has("Instrumento " + n)) n++;
+    const inst = crearInstrumentoPiano({
+      nombre: entradaNombre ? entradaNombre : "Instrumento " + n,
+      entrada: entrada || PIANO_ENTRADA_NINGUNA,
+      entradaNombre: entradaNombre || ""
+    });
+    // Un instrumento nuevo arranca con un astro distinto al del
+    // anterior, para que se distinga al tocar los dos a la vez.
+    inst.astrosSel.fill(false);
+    inst.astrosSel[(this.instrumentos.length) % 10] = true;
+    this.instrumentos.push(inst);
+    this.instSel = inst.id;
+    if (synth.ctx) this._asegurarBus(inst);
+    this._guardarConfig();
+    this._avisarCambioInstrumentos();
+    return inst;
+  },
+
+  eliminarInstrumento(id) {
+    if (this.instrumentos.length <= 1) return false;
+    const inst = this.instrumento(id);
+    if (!inst) return false;
+    inst.motor.soltarTodo();
+    const bus = inst.bus, pan = inst.nodoPan;
+    setTimeout(() => {
+      try { if (bus) bus.disconnect(); } catch (e) {}
+      try { if (pan) pan.disconnect(); } catch (e) {}
+    }, 6000);
+    this.instrumentos = this.instrumentos.filter(i => i.id !== id);
+    if (this.instSel === id) this.instSel = this.instrumentos[0].id;
+    // Si estaba soleado, los demás grupos vuelven a sonar
+    synth.refrescarVolumenesGrupos();
+    this._guardarConfig();
+    this._avisarCambioInstrumentos();
+    return true;
+  },
+
+  renombrarInstrumento(id, nombre) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    const limpio = String(nombre || "").trim().slice(0, 40);
+    if (limpio) inst.nombre = limpio;
+    this._guardarConfig();
+    this._avisarCambioInstrumentos();
+  },
+
+  // entrada: "*", "" o id de input MIDI (con su nombre, para
+  // reencontrarlo en otra sesión si el navegador le cambia el id)
+  setEntradaInstrumento(id, entrada, entradaNombre) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    inst.motor.soltarTodo();
+    inst.entrada = entrada;
+    inst.entradaNombre = entradaNombre || "";
+    this._guardarConfig();
+  },
+
+  setCanalInstrumento(id, canal) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    inst.canal = clamp(Math.round(canal), 0, 16);
+    this._guardarConfig();
+  },
+
+  // Tras (re)conectar controladores: si el id guardado ya no existe
+  // pero hay un controlador con el mismo nombre, es el mismo aparato.
+  resolverEntradas(inputs) {
+    let cambio = false;
+    for (const inst of this.instrumentos) {
+      if (inst.entrada === PIANO_ENTRADA_TODAS || inst.entrada === PIANO_ENTRADA_NINGUNA) continue;
+      if (inputs.some(d => d.id === inst.entrada)) continue;
+      const mismo = inst.entradaNombre && inputs.find(d => d.name === inst.entradaNombre);
+      if (mismo) { inst.entrada = mismo.id; cambio = true; }
+    }
+    if (cambio) this._guardarConfig();
+  },
+
+  _avisarCambioInstrumentos() {
+    if (typeof mezclador !== "undefined" && mezclador.reconstruir) mezclador.reconstruir();
+    if (typeof renderInstrumentosPiano === "function") renderInstrumentosPiano();
+  },
 
   // -------------------- Escala --------------------
 
@@ -119,10 +270,17 @@ const piano = {
     return base * Math.pow(2, this.octavaDePaso(paso)) * this.factorAnclaje();
   },
 
-  // Astros que suenan, en el orden del secuenciador: ese orden define
-  // quién es carrier y quién modula en el ruteo en serie.
-  astrosActivos() {
-    return synth.ordenSecuencia.filter(k => this.astrosSel[k]);
+  // Astros que suenan en un instrumento, en el orden del secuenciador:
+  // ese orden define quién es carrier y quién modula en el ruteo en serie.
+  astrosActivos(inst) {
+    const i = inst || this.instActual();
+    return i ? synth.ordenSecuencia.filter(k => i.astrosSel[k]) : [];
+  },
+
+  // Octava de un astro dentro del instrumento (la de SU conjunto)
+  octavaAstro(k, inst) {
+    const i = inst || this.instActual();
+    return i ? i.timbre.astros[k].octava : 0;
   },
 
   // -------------------- Ajustes --------------------
@@ -134,19 +292,23 @@ const piano = {
   },
 
   setAstroSel(k, on) {
-    if (k < 0 || k > 9) return;
-    this.astrosSel[k] = !!on;
+    const inst = this.instActual();
+    if (!inst || k < 0 || k > 9) return;
+    inst.astrosSel[k] = !!on;
     this._guardarConfig();
   },
 
   seleccionarTodos(on) {
-    for (let k = 0; k < 10; k++) this.astrosSel[k] = !!on;
+    const inst = this.instActual();
+    if (!inst) return;
+    for (let k = 0; k < 10; k++) inst.astrosSel[k] = !!on;
     this._guardarConfig();
   },
 
   setRuteo(id) {
-    if (id !== "paralelo" && id !== "serie") return;
-    this.ruteo = id;
+    const inst = this.instActual();
+    if (!inst || (id !== "paralelo" && id !== "serie")) return;
+    inst.ruteo = id;
     this._guardarConfig();
   },
 
@@ -175,7 +337,7 @@ const piano = {
 
   // Amplía o reduce el rango visible manteniendo fijo el punto bajo
   // `centroOctava` (coordenada de octava absoluta, mismo espacio que
-  // octavaBase/octavaPorPlaneta): así el zoom con la rueda no salta.
+  // octavaBase/octava de los astros): así el zoom con la rueda no salta.
   zoom(factorPasos, centroOctava) {
     const centro = (typeof centroOctava === "number")
       ? centroOctava
@@ -199,23 +361,23 @@ const piano = {
     return true;
   },
 
-  // Rango de octavas (absolutas) que abarcan los astros visibles en el
-  // teclado y las notas que estén sonando en este momento — el "extremo
-  // grave" y el "extremo agudo" que se están ejecutando de verdad.
+  // Rango de octavas (absolutas) que abarcan los astros visibles del
+  // instrumento seleccionado y las notas que estén sonando.
   rangoEnUso() {
+    const inst = this.instActual();
     let min = null, max = null;
     const marcar = (oct) => {
       if (min === null || oct < min) min = oct;
       if (max === null || oct + 1 > max) max = oct + 1;
     };
 
-    if (typeof estado !== "undefined" && estado.astros && estado.astros.length >= 10) {
+    if (inst && typeof estado !== "undefined" && estado.astros && estado.astros.length >= 10) {
       for (let k = 0; k < 10; k++) {
-        if (!this.astrosSel[k] && k !== this.astroFoco) continue;
-        marcar(synth.octavaPorPlaneta[k]);
+        if (!inst.astrosSel[k] && k !== this.astroFoco) continue;
+        marcar(this.octavaAstro(k, inst));
       }
     }
-    for (const paso of this._voces.keys()) marcar(this.octavaDePaso(paso));
+    if (inst) for (const paso of inst.motor.claves()) marcar(this.octavaDePaso(paso));
 
     return min === null ? null : { min, max };
   },
@@ -238,79 +400,102 @@ const piano = {
     this._guardarConfig();
   },
 
+  // ----- Mezclador: cada instrumento es un canal propio -----
+
+  setVolumenInstrumento(id, v) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    inst.volumen = clamp(v, 0, 1);
+    this._aplicarVolumenBus(inst);
+    this._guardarConfig();
+  },
+
+  setPanInstrumento(id, v) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    inst.pan = clamp(v, -1, 1);
+    if (inst.nodoPan && synth.ctx) inst.nodoPan.pan.setTargetAtTime(inst.pan, synth.ctx.currentTime, 0.01);
+    this._guardarConfig();
+  },
+
+  setMutedInstrumento(id, on) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    inst.muted = !!on;
+    synth.refrescarVolumenesGrupos();
+    this._guardarConfig();
+  },
+
+  setSoloInstrumento(id, on) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    inst.solo = !!on;
+    synth.refrescarVolumenesGrupos();
+    this._guardarConfig();
+  },
+
+  setSalidaInstrumento(id, salida) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    inst.salida = salida || null;
+    this._aplicarRuteoGrupo(inst);
+    this._guardarConfig();
+  },
+
+  setEnMasterInstrumento(id, on) {
+    const inst = this.instrumento(id);
+    if (!inst) return;
+    inst.enMaster = !!on;
+    this._aplicarRuteoGrupo(inst);
+    this._guardarConfig();
+  },
+
+  // Volumen del instrumento seleccionado (el slider del panel)
   setVolumenGeneral(v) {
-    this.volumenGeneral = clamp(v, 0, 1);
-    this._aplicarVolumenBus();
-    this._guardarConfig();
+    const inst = this.instActual();
+    if (inst) this.setVolumenInstrumento(inst.id, v);
   },
 
-  setPan(v) {
-    this.panValor = clamp(v, -1, 1);
-    if (this.nodoPan && synth.ctx) {
-      this.nodoPan.pan.setTargetAtTime(this.panValor, synth.ctx.currentTime, 0.01);
-    }
-    this._guardarConfig();
+  _factorBus(inst) {
+    if (inst.muted) return 0;
+    return (synth.haySoloEnGrupos() && !inst.solo) ? 0 : 1;
   },
 
-  setMuted(on) {
-    this.muted = !!on;
-    this._aplicarVolumenBus();
-    synth._aplicarVolumenBusSecuenciador();
-    this._guardarConfig();
+  _aplicarVolumenBus(inst) {
+    if (!inst.bus || !synth.ctx) return;
+    const v = inst.volumen * this._factorBus(inst);
+    inst.bus.gain.setTargetAtTime(v, synth.ctx.currentTime, 0.01);
   },
 
-  setSolo(on) {
-    this.solo = !!on;
-    this._aplicarVolumenBus();
-    synth._aplicarVolumenBusSecuenciador();
-    this._guardarConfig();
+  _aplicarVolumenBuses() {
+    for (const inst of this.instrumentos) this._aplicarVolumenBus(inst);
   },
 
-  setSalida(id) {
-    this.salida = id || null;
-    this._aplicarRuteoGrupo();
-    this._guardarConfig();
-  },
-
-  setEnMaster(on) {
-    this.enMaster = !!on;
-    this._aplicarRuteoGrupo();
-    this._guardarConfig();
-  },
-
-  // El piano se calla si el secuenciador está soleado (y viceversa,
-  // ver synth._factorBusSecuenciador): son las dos fuentes del mezclador.
-  _factorBus() {
-    if (this.muted) return 0;
-    const haySolo = this.solo || synth.secuenciadorSolo;
-    return (haySolo && !this.solo) ? 0 : 1;
-  },
-
-  _aplicarVolumenBus() {
-    if (!this.bus || !synth.ctx) return;
-    const v = this.volumenGeneral * this._factorBus();
-    this.bus.gain.setTargetAtTime(v, synth.ctx.currentTime, 0.01);
-  },
-
-  // Ruteo del bus del piano hacia el Maestro y/o su salida virtual
-  // asignada. Separado del volumen (mute/solo son un nivel de gain,
-  // esto es qué destinos reciben la señal).
-  _aplicarRuteoGrupo() {
-    if (!this.nodoPan || !synth.ctx) return;
+  // Ruteo del bus de un instrumento hacia el Maestro y/o su salida
+  // virtual asignada. Separado del volumen (mute/solo son un nivel de
+  // gain, esto es qué destinos reciben la señal).
+  _aplicarRuteoGrupo(inst) {
+    if (!inst.nodoPan || !synth.ctx) return;
     if (typeof salidasAudio !== "undefined") salidasAudio._asegurarTodosLosNodos();
-    try { this.nodoPan.disconnect(); } catch (e) {}
-    this.nodoPan.connect(this.meterPiano);
-    if (this.enMaster) this.nodoPan.connect(synth.masterGain);
-    const salida = typeof salidasAudio !== "undefined" ? salidasAudio.nodoGain(this.salida) : null;
-    if (salida) this.nodoPan.connect(salida);
+    try { inst.nodoPan.disconnect(); } catch (e) {}
+    inst.nodoPan.connect(inst.meter);
+    if (inst.enMaster) inst.nodoPan.connect(synth.masterGain);
+    const salida = typeof salidasAudio !== "undefined" ? salidasAudio.nodoGain(inst.salida) : null;
+    if (salida) inst.nodoPan.connect(salida);
+  },
+
+  _aplicarRuteoGrupos() {
+    for (const inst of this.instrumentos) this._aplicarRuteoGrupo(inst);
   },
 
   setSostener(on) {
     this.sostener = !!on;
     if (!this.sostener) {
       // Soltar el pedal libera todo lo que quedó pendiente
-      for (const paso of [...this._pedalPendientes]) this.notaOff(paso, true);
-      this._pedalPendientes.clear();
+      for (const inst of this.instrumentos) {
+        for (const paso of [...inst.pendientes]) this.notaOff(paso, true, inst);
+        inst.pendientes.clear();
+      }
     }
     this._guardarConfig();
   },
@@ -329,9 +514,33 @@ const piano = {
     this._guardarConfig();
   },
 
+  setSeguirNotas(on) {
+    this.seguirNotas = !!on;
+    this._guardarConfig();
+  },
+
   // -------------------- Audio --------------------
 
-  _prepararAudio() {
+  _asegurarBus(inst) {
+    if (inst.bus || !synth.ctx) return;
+    inst.bus = synth.ctx.createGain();
+    inst.nodoPan = synth.ctx.createStereoPanner();
+    inst.nodoPan.pan.value = inst.pan;
+    inst.meter = synth.ctx.createAnalyser();
+    inst.meter.fftSize = 512;
+    inst.bus.connect(inst.nodoPan);
+    this._aplicarRuteoGrupo(inst);
+    this._aplicarVolumenBus(inst);
+  },
+
+  // Crea los buses de todos los instrumentos (al arrancar, para que el
+  // mezclador tenga medidores antes de la primera nota).
+  prepararBuses() {
+    if (!synth.ctx) return;
+    for (const inst of this.instrumentos) this._asegurarBus(inst);
+  },
+
+  _prepararAudio(inst) {
     if (!synth.ctx) synth.init();
     if (!synth.ctx) return false;
     if (synth.ctx.state === "suspended") synth.ctx.resume();
@@ -341,227 +550,70 @@ const piano = {
       const chk = document.getElementById("synth-enabled");
       if (chk) chk.checked = true;
     }
-    if (!this.bus) {
-      this.bus = synth.ctx.createGain();
-      this.nodoPan = synth.ctx.createStereoPanner();
-      this.nodoPan.pan.value = this.panValor;
-      this.meterPiano = synth.ctx.createAnalyser();
-      this.meterPiano.fftSize = 512;
-      this.bus.connect(this.nodoPan);
-      this._aplicarRuteoGrupo();
-      this._aplicarVolumenBus();
-    }
+    this._asegurarBus(inst);
     return true;
   },
 
-  // Un "operador": la fuente de un astro (oscilador o ruido filtrado)
-  // con su propio gain de envelope, afinado a `freq`. Clona también el
-  // HPF/LPF del astro (mismo criterio que ADSR/armónicos/forma de onda:
-  // se copian los valores actuales al crear la voz, sin seguir cambios
-  // en vivo mientras la nota ya suena).
-  _crearOperador(k, freq) {
-    const ctx = synth.ctx;
-    const gain = ctx.createGain();
-    gain.gain.value = 0.0001;
-
-    const hpf = ctx.createBiquadFilter();
-    hpf.type = "highpass";
-    hpf.frequency.value = synth.planetHPF[k];
-    hpf.Q.value = synth.planetHPFQ[k];
-
-    const lpf = ctx.createBiquadFilter();
-    lpf.type = "lowpass";
-    lpf.frequency.value = synth.planetLPF[k];
-    lpf.Q.value = synth.planetLPFQ[k];
-
-    gain.connect(hpf);
-    hpf.connect(lpf);
-
-    // Pan del astro (el mismo valor que usa su voz del secuenciador):
-    // solo se conecta cuando el operador termina siendo audible
-    // (carrier), igual que en synth.js.
-    const pan = ctx.createStereoPanner();
-    pan.pan.value = synth.planetPan[k];
-
-    const op = { astro: k, osc: null, src: null, bandpass: null, modGain: null, gain, hpf, lpf, pan, freq };
-
-    if (synth.formaOnda[k] === "noise") {
-      const bandpass = ctx.createBiquadFilter();
-      bandpass.type = "bandpass";
-      bandpass.frequency.value = freq;
-      bandpass.Q.value = 14;
-
-      const src = ctx.createBufferSource();
-      src.buffer = synth._crearNoiseBuffer();
-      src.loop = true;
-      src.connect(bandpass);
-      bandpass.connect(gain);
-      src.start();
-
-      op.src = src;
-      op.bandpass = bandpass;
-      return op;
-    }
-
-    const osc = ctx.createOscillator();
-    if (synth.formaOnda[k] === "custom") {
-      osc.setPeriodicWave(synth._ondaPersonalizada(k));
-    } else {
-      osc.type = synth.formaOnda[k];
-    }
-    osc.frequency.value = freq;
-    osc.connect(gain);
-    osc.start();
-
-    op.osc = osc;
-    return op;
+  // Cadenas FM del instrumento: una por astro (paralelo) o una sola
+  // cadena en el orden del secuenciador (serie).
+  _cadenas(inst) {
+    const astros = this.astrosActivos(inst);
+    if (!astros.length) return [];
+    return inst.ruteo === "serie" ? [astros] : astros.map(k => [k]);
   },
 
-  notaOn(paso, velocidad) {
-    if (!this._prepararAudio()) return;
+  notaOn(paso, velocidad, instrumento) {
+    const inst = instrumento || this.instActual();
+    if (!inst || !this._prepararAudio(inst)) return;
 
-    const astros = this.astrosActivos();
-    if (!astros.length) return;
+    const cadenas = this._cadenas(inst);
+    if (!cadenas.length) return;
 
-    // Retrigger de la misma tecla y límite de polifonía
-    if (this._voces.has(paso)) this.notaOff(paso, true);
-    while (this._voces.size >= this.MAX_VOCES) {
-      const masVieja = this._voces.keys().next().value;
-      this.notaOff(masVieja, true);
-    }
-    this._pedalPendientes.delete(paso);
-
-    const ctx = synth.ctx;
-    const t0 = ctx.currentTime;
-    const vel = clamp((typeof velocidad === "number") ? velocidad : this.velocidad, 0.02, 1);
+    inst.pendientes.delete(paso);
+    const vel = (typeof velocidad === "number") ? velocidad : this.velocidad;
     const fBase = this.frecuenciaDePaso(paso);
+    inst.motor.notaOn(paso, cadenas,
+      k => fBase * Math.pow(2, inst.timbre.astros[k].octava), vel);
 
-    const ops = astros.map(k => {
-      const f = Math.max(20, fBase * Math.pow(2, synth.octavaPorPlaneta[k]));
-      return this._crearOperador(k, f);
-    });
-
-    // Ruteo: aditivo (todos a la salida) o cadena FM (solo el primero).
-    // La salida audible de cada operador es SU lpf (fin de la cadena de
-    // filtros); el tap de FM (modGain) sigue leyendo de `gain` crudo, sin
-    // pasar por los filtros, igual que en synth.js.
-    if (this.ruteo === "serie") {
-      ops[0].lpf.connect(ops[0].pan);
-      ops[0].pan.connect(this.bus);
-      for (let idx = 1; idx < ops.length; idx++) {
-        const mod = ops[idx];
-        const destino = ops[idx - 1];
-        const modGain = ctx.createGain();
-        // Misma escala que el synth: el gain del modulador llega a ~0.4
-        modGain.gain.value = destino.freq * synth.fmProfundidad * synth.fmProfundidadAstro[mod.astro] * 2.5;
-        mod.gain.connect(modGain);
-        if (destino.osc) modGain.connect(destino.osc.frequency);
-        if (destino.bandpass) modGain.connect(destino.bandpass.frequency);
-        mod.modGain = modGain;
-      }
-    } else {
-      for (const op of ops) {
-        op.lpf.connect(op.pan);
-        op.pan.connect(this.bus);
-      }
-    }
-
-    // ADSR por astro (el mismo que edita la curva del panel)
-    for (const op of ops) {
-      const adsr = synth._adsrDe(op.astro);
-      const curva = synth._curvaDe(op.astro);
-      const peak = Math.max(synth.planetVolume[op.astro] * synth._factorAstro(op.astro) * vel * 0.4, 0.0001);
-      const sustain = Math.max(peak * adsr.sustain, 0.0001);
-      const g = op.gain.gain;
-
-      g.setValueAtTime(0.0001, t0);
-      const puntos = [{ t: t0, v: 0.0001 }];
-      synth._programarSegmento(g, puntos, 0.0001, peak, t0, adsr.attack, curva.attack);
-      synth._programarSegmento(g, puntos, peak, sustain, t0 + adsr.attack, adsr.decay, curva.decay);
-    }
-
-    this._voces.set(paso, { paso, ops, inicio: t0 });
+    if (this.seguirNotas && typeof asegurarPasoVisiblePiano === "function") asegurarPasoVisiblePiano(paso);
     if (typeof marcarTeclaPiano === "function") marcarTeclaPiano(paso, true);
   },
 
   // forzar = ignorar el pedal de sostenido
-  notaOff(paso, forzar) {
-    const voz = this._voces.get(paso);
-    if (!voz) return;
+  notaOff(paso, forzar, instrumento) {
+    const inst = instrumento || this.instActual();
+    if (!inst || !inst.motor.sonando(paso)) return;
 
     if (this.sostener && !forzar) {
-      this._pedalPendientes.add(paso);
+      inst.pendientes.add(paso);
       return;
     }
-
-    this._voces.delete(paso);
-    this._pedalPendientes.delete(paso);
-    if (typeof marcarTeclaPiano === "function") marcarTeclaPiano(paso, false);
-
-    const ctx = synth.ctx;
-    if (!ctx) return;
-    const now = ctx.currentTime;
-    let releaseMax = 0.05;
-
-    for (const op of voz.ops) {
-      const adsr = synth._adsrDe(op.astro);
-      const curva = synth._curvaDe(op.astro);
-      const g = op.gain.gain;
-      const ancla = Math.max(g.value, 0.0001);
-
-      if (g.cancelAndHoldAtTime) g.cancelAndHoldAtTime(now);
-      else g.cancelScheduledValues(now);
-      g.setValueAtTime(ancla, now);
-      synth._programarSegmento(g, [], ancla, 0.0001, now, adsr.release, curva.release);
-      releaseMax = Math.max(releaseMax, adsr.release);
-    }
-
-    // Apagar y liberar los nodos cuando el release ya terminó
-    const fin = now + releaseMax + 0.05;
-    for (const op of voz.ops) {
-      try { if (op.osc) op.osc.stop(fin); } catch (e) {}
-      try { if (op.src) op.src.stop(fin); } catch (e) {}
-    }
-    setTimeout(() => {
-      for (const op of voz.ops) {
-        for (const nodo of [op.osc, op.src, op.bandpass, op.modGain, op.gain, op.hpf, op.lpf, op.pan]) {
-          try { if (nodo) nodo.disconnect(); } catch (e) {}
-        }
-      }
-    }, (releaseMax + 0.2) * 1000);
+    inst.pendientes.delete(paso);
+    inst.motor.notaOff(paso);
+    if (typeof marcarTeclaPiano === "function") marcarTeclaPiano(paso, this.sonando(paso));
   },
 
   soltarTodo() {
-    for (const paso of [...this._voces.keys()]) this.notaOff(paso, true);
-    this._pedalPendientes.clear();
+    for (const inst of this.instrumentos) {
+      const pasos = inst.motor.claves();
+      inst.motor.soltarTodo();
+      inst.pendientes.clear();
+      if (typeof marcarTeclaPiano === "function") pasos.forEach(p => marcarTeclaPiano(p, false));
+    }
     this._teclasPC.clear();
   },
 
+  // ¿Algún instrumento está tocando ese paso?
   sonando(paso) {
-    return this._voces.has(paso);
+    return this.instrumentos.some(inst => inst.motor.sonando(paso));
   },
 
   // Con anclaje "astro" la carta en movimiento desafina el teclado en
   // vivo: las notas que ya suenan se reafinan con una rampa corta.
   actualizarAfinacion() {
-    if (!synth.ctx || this._voces.size === 0) return;
-    const now = synth.ctx.currentTime;
-
-    for (const voz of this._voces.values()) {
-      const fBase = this.frecuenciaDePaso(voz.paso);
-      for (const op of voz.ops) {
-        const f = Math.max(20, fBase * Math.pow(2, synth.octavaPorPlaneta[op.astro]));
-        op.freq = f;
-        for (const param of [op.osc && op.osc.frequency, op.bandpass && op.bandpass.frequency]) {
-          if (!param) continue;
-          param.cancelScheduledValues(now);
-          param.setValueAtTime(Math.max(param.value, 20), now);
-          param.exponentialRampToValueAtTime(f, now + 0.06);
-        }
-        if (op.modGain) {
-          op.modGain.gain.setTargetAtTime(f * synth.fmProfundidad * synth.fmProfundidadAstro[op.astro] * 2.5, now, 0.02);
-        }
-      }
+    for (const inst of this.instrumentos) {
+      inst.motor.reafinar((voz, k) =>
+        this.frecuenciaDePaso(voz.clave) * Math.pow(2, inst.timbre.astros[k].octava));
     }
   },
 
@@ -602,19 +654,43 @@ const piano = {
 
   // -------------------- MIDI --------------------
   // Una tecla del controlador = un paso de la escala microtonal
-  // (Do4 = primer paso). Es el mapeo estándar de un controlador
-  // microtonal: la octava real llega cada numMicrotonos teclas.
+  // (Do4 = primer paso). Cada instrumento escucha SU controlador (y
+  // canal); "*" recibe los controladores que no tengan instrumento
+  // propio, así que con un solo instrumento todo sigue como antes.
 
   midiActivo() {
     return this.activo && this.midiEntrada;
   },
 
-  midiNoteOn(nota, velocidad) {
-    this.notaOn(nota - this.NOTA_MIDI_BASE, (velocidad || 100) / 127);
+  _escucha(inst, entradaId, canal) {
+    if (inst.canal && canal && inst.canal !== canal) return false;
+    if (inst.entrada === PIANO_ENTRADA_NINGUNA) return false;
+    if (inst.entrada === PIANO_ENTRADA_TODAS) {
+      return !entradaId || !this.instrumentos.some(o => o.entrada === entradaId);
+    }
+    return inst.entrada === entradaId;
   },
 
-  midiNoteOff(nota) {
-    this.notaOff(nota - this.NOTA_MIDI_BASE);
+  _instrumentosDeEntrada(entradaId, canal) {
+    return this.instrumentos.filter(inst => this._escucha(inst, entradaId, canal));
+  },
+
+  // Devuelve true si algún instrumento se quedó con la nota
+  midiNoteOn(nota, velocidad, entradaId, canal) {
+    if (!this.midiActivo()) return false;
+    const destinos = this._instrumentosDeEntrada(entradaId, canal);
+    if (!destinos.length) return false;
+    const vel = (velocidad || 100) / 127;
+    for (const inst of destinos) this.notaOn(nota - this.NOTA_MIDI_BASE, vel, inst);
+    return true;
+  },
+
+  midiNoteOff(nota, entradaId, canal) {
+    if (!this.midiActivo()) return false;
+    const destinos = this._instrumentosDeEntrada(entradaId, canal);
+    if (!destinos.length) return false;
+    for (const inst of destinos) this.notaOff(nota - this.NOTA_MIDI_BASE, false, inst);
+    return true;
   },
 
   // -------------------- Persistencia --------------------
@@ -623,54 +699,82 @@ const piano = {
     try {
       localStorage.setItem(PIANO_STORAGE_KEY, JSON.stringify({
         activo: this.activo,
-        astrosSel: this.astrosSel.slice(),
-        ruteo: this.ruteo,
+        instrumentos: this.instrumentos.map(inst => ({
+          id: inst.id,
+          nombre: inst.nombre,
+          entrada: inst.entrada,
+          entradaNombre: inst.entradaNombre,
+          canal: inst.canal,
+          astrosSel: inst.astrosSel.slice(),
+          ruteo: inst.ruteo,
+          timbre: inst.timbre,
+          volumen: inst.volumen,
+          pan: inst.pan,
+          muted: inst.muted,
+          solo: inst.solo,
+          salida: inst.salida,
+          enMaster: inst.enMaster
+        })),
+        instSel: this.instSel,
         anclaje: this.anclaje,
         astroFoco: this.astroFoco,
         octavaBase: this.octavaBase,
         octavas: this.octavas,
         velocidad: this.velocidad,
-        volumenGeneral: this.volumenGeneral,
-        panValor: this.panValor,
-        muted: this.muted,
-        solo: this.solo,
-        salida: this.salida,
-        enMaster: this.enMaster,
         sostener: this.sostener,
         tecladoPC: this.tecladoPC,
         midiEntrada: this.midiEntrada,
+        seguirNotas: this.seguirNotas,
         pasoBaseTeclado: this.pasoBaseTeclado
       }));
     } catch (e) {}
   },
 
   _cargarConfig() {
+    let d = null;
     try {
       const raw = localStorage.getItem(PIANO_STORAGE_KEY);
-      if (!raw) return;
-      const d = JSON.parse(raw);
+      if (raw) d = JSON.parse(raw);
+    } catch (e) {}
 
+    if (d && typeof d === "object") {
       if (typeof d.activo === "boolean") this.activo = d.activo;
-      if (Array.isArray(d.astrosSel) && d.astrosSel.length === 10) {
-        for (let k = 0; k < 10; k++) this.astrosSel[k] = !!d.astrosSel[k];
+      if (Array.isArray(d.instrumentos) && d.instrumentos.length) {
+        this.instrumentos = d.instrumentos.map(x => crearInstrumentoPiano(x));
+      } else {
+        // Config de antes de los instrumentos: el piano único pasa a ser
+        // el instrumento 1, con el timbre actual de los astros (suena
+        // igual que antes) y escuchando todos los controladores.
+        this.instrumentos = [crearInstrumentoPiano({
+          nombre: "Piano",
+          entrada: PIANO_ENTRADA_TODAS,
+          astrosSel: d.astrosSel,
+          ruteo: d.ruteo,
+          volumen: d.volumenGeneral,
+          pan: d.panValor,
+          muted: d.muted,
+          solo: d.solo,
+          salida: d.salida,
+          enMaster: d.enMaster
+        })];
       }
-      if (d.ruteo === "paralelo" || d.ruteo === "serie") this.ruteo = d.ruteo;
+      if (typeof d.instSel === "string") this.instSel = d.instSel;
       if (d.anclaje === "escala" || d.anclaje === "astro") this.anclaje = d.anclaje;
       if (typeof d.astroFoco === "number") this.astroFoco = clamp(Math.round(d.astroFoco), 0, 9);
       if (typeof d.octavaBase === "number") this.octavaBase = clamp(Math.round(d.octavaBase), PIANO_OCTAVA_BASE_MIN, PIANO_OCTAVA_BASE_MAX);
       if (typeof d.octavas === "number") this.octavas = clamp(Math.round(d.octavas), 1, PIANO_OCTAVAS_MAX);
       if (typeof d.velocidad === "number") this.velocidad = clamp(d.velocidad, 0, 1);
-      if (typeof d.volumenGeneral === "number") this.volumenGeneral = clamp(d.volumenGeneral, 0, 1);
-      if (typeof d.panValor === "number") this.panValor = clamp(d.panValor, -1, 1);
-      if (typeof d.muted === "boolean") this.muted = d.muted;
-      if (typeof d.solo === "boolean") this.solo = d.solo;
-      if (typeof d.salida === "string") this.salida = d.salida || null;
-      if (typeof d.enMaster === "boolean") this.enMaster = d.enMaster;
       if (typeof d.sostener === "boolean") this.sostener = d.sostener;
       if (typeof d.tecladoPC === "boolean") this.tecladoPC = d.tecladoPC;
       if (typeof d.midiEntrada === "boolean") this.midiEntrada = d.midiEntrada;
+      if (typeof d.seguirNotas === "boolean") this.seguirNotas = d.seguirNotas;
       if (typeof d.pasoBaseTeclado === "number") this.pasoBaseTeclado = Math.round(d.pasoBaseTeclado);
-    } catch (e) {}
+    }
+
+    if (!this.instrumentos.length) {
+      this.instrumentos = [crearInstrumentoPiano({ nombre: "Piano", entrada: PIANO_ENTRADA_TODAS })];
+    }
+    if (!this.instrumento(this.instSel)) this.instSel = this.instrumentos[0].id;
   }
 };
 
@@ -810,12 +914,15 @@ function renderPianoTeclado(forzar) {
   }
 
   // ---- Marcadores de astros (se actualizan aparte) ----
+  svg += `<g id="piano-sonando" pointer-events="none"></g>`;
   svg += `<g id="piano-marcadores" pointer-events="none"></g>`;
   svg += `</svg>`;
 
   cont.innerHTML = svg;
   conectarTecladoPiano(cont);
   actualizarMarcadoresPiano();
+  // El SVG se rehízo (zoom, desplazamiento): volver a marcar lo que suena
+  actualizarSonandoPiano();
 }
 
 // Símbolo + aguja de cada astro sobre la tecla de su región.
@@ -835,9 +942,10 @@ function actualizarMarcadoresPiano() {
   const w = svgEl ? parseFloat(svgEl.getAttribute("width")) : 0;
   const wTecla = (w - G.margen * 2) / cols;
 
+  const inst = piano.instActual();
   const visibles = [];
   for (let k = 0; k < 10; k++) {
-    if (!piano.astrosSel[k] && k !== piano.astroFoco) continue;
+    if (!inst.astrosSel[k] && k !== piano.astroFoco) continue;
     visibles.push(k);
   }
 
@@ -849,7 +957,7 @@ function actualizarMarcadoresPiano() {
   for (const k of visibles) {
     const a = estado.astros[k];
     const fracRegion = posicionZodiacalVisual(a.signo, a.grado, a.minuto) / gradosPorMicrotono;
-    const colAbs = (synth.octavaPorPlaneta[k] - piano.octavaBase) * numMicrotonos + fracRegion;
+    const colAbs = (piano.octavaAstro(k, inst) - piano.octavaBase) * numMicrotonos + fracRegion;
 
     const fuera = (colAbs < 0) ? -1 : (colAbs > cols ? 1 : 0);
     const col = clamp(colAbs, 0, cols);
@@ -859,7 +967,7 @@ function actualizarMarcadoresPiano() {
       ? THEME.astros.coloresPorAstro[k]
       : COLORES_ASTROS_DEFAULT[k];
     const foco = (k === piano.astroFoco);
-    const activo = piano.astrosSel[k];
+    const activo = inst.astrosSel[k];
     const opacidad = fuera ? 0.35 : (activo ? 1 : 0.5);
 
     // Aguja: posición exacta de la afinación dentro de la región
@@ -883,11 +991,137 @@ function actualizarMarcadoresPiano() {
 }
 
 // Resalta / apaga una tecla que está sonando
-function marcarTeclaPiano(paso, encendida) {
+// Una nota empezó o terminó: se repinta todo lo que suena (es barato y
+// así también vale para varios instrumentos tocando la misma tecla).
+function marcarTeclaPiano() {
+  actualizarSonandoPiano();
+}
+
+// Qué suena ahora, de todos los instrumentos:
+//   pulsadas → pasos que se están tocando (tecla dorada)
+//   sonidos  → dónde suena de verdad cada astro de cada nota: la octava
+//              del conjunto desplaza la altura numMicrotonos pasos por
+//              octava, así que el astro puede sonar en otra tecla.
+function _pianoQueSuena() {
+  const pulsadas = new Set();
+  const sonidos = [];
+  const n = numMicrotonos;
+  for (const inst of piano.instrumentos) {
+    for (const [paso, voz] of inst.motor._voces) {
+      pulsadas.add(paso);
+      for (const k of voz.ops.keys()) {
+        sonidos.push({ paso: paso + inst.timbre.astros[k].octava * n, astro: k, origen: paso });
+      }
+    }
+  }
+  return { pulsadas, sonidos };
+}
+
+function _pianoColorAstro(k) {
+  return (THEME.astros && THEME.astros.coloresPorAstro && THEME.astros.coloresPorAstro[k])
+    ? THEME.astros.coloresPorAstro[k]
+    : COLORES_ASTROS_DEFAULT[k];
+}
+
+// Resalta las teclas pulsadas, pone un punto del color del astro en la
+// tecla donde suena cada uno, y cuenta en los bordes lo que queda fuera
+// del rango dibujado («◀ 2» / «1 ▶»).
+function actualizarSonandoPiano() {
   const cont = document.getElementById("piano-teclado");
-  if (!cont) return;
-  const tecla = cont.querySelector(`.piano-tecla[data-paso="${paso}"]`);
-  if (tecla) tecla.classList.toggle("piano-tecla-sonando", !!encendida);
+  const g = document.getElementById("piano-sonando");
+  if (!cont || !g) return;
+  const { pulsadas, sonidos } = _pianoQueSuena();
+
+  cont.querySelectorAll(".piano-tecla").forEach(t => {
+    t.classList.toggle("piano-tecla-sonando", pulsadas.has(parseInt(t.dataset.paso, 10)));
+  });
+
+  const G = PIANO_GEOM;
+  const cols = _pianoColumnas();
+  const svgEl = g.ownerSVGElement;
+  const w = svgEl ? parseFloat(svgEl.getAttribute("width")) : 0;
+  const wTecla = (w - G.margen * 2) / cols;
+  const primero = piano.octavaBase * numMicrotonos;
+
+  // Fuera del dibujo: pasos distintos a cada lado (un astro que suena en
+  // la misma tecla que se pulsó no se cuenta dos veces)
+  const fueraIzq = new Set(), fueraDer = new Set();
+  const pila = new Map();   // columna → puntos ya dibujados (para apilarlos)
+  let svg = "";
+
+  const contar = paso => {
+    const col = paso - primero;
+    if (col < 0) { fueraIzq.add(paso); return false; }
+    if (col >= cols) { fueraDer.add(paso); return false; }
+    return true;
+  };
+  for (const paso of pulsadas) contar(paso);
+  // Las teclas pulsadas fuera de vista (tienen prioridad al ir hacia ellas)
+  const pulsadasIzq = [...fueraIzq], pulsadasDer = [...fueraDer];
+
+  for (const s of sonidos) {
+    const col = s.paso - primero;
+    if (!contar(s.paso)) continue;
+    const i = pila.get(col) || 0;
+    pila.set(col, i + 1);
+    const cx = G.margen + (col + 0.5) * wTecla;
+    const cy = G.yFranja - 6 - i * 7;
+    const r = clamp(wTecla * 0.32, 2.2, 4.2);
+    svg += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r.toFixed(1)}" fill="${_pianoColorAstro(s.astro)}" ` +
+           `stroke="#0d0b18" stroke-width="1"/>`;
+  }
+
+  // Insignias clicables: llevan el teclado hasta esas notas
+  const insignia = (x, texto, ancla, lado) =>
+    `<text class="piano-insignia-fuera" data-lado="${lado}" x="${x}" y="${G.yTeclas + 14}" ` +
+    `text-anchor="${ancla}" font-size="12" font-weight="700" pointer-events="all" ` +
+    `fill="#ffc04d" stroke="#0d0b18" stroke-width="3" paint-order="stroke">` +
+    `<title>Clic para ir a lo que suena fuera del rango dibujado</title>${texto}</text>`;
+  if (fueraIzq.size) svg += insignia(4, `◀ ${fueraIzq.size}`, "start", "izq");
+  if (fueraDer.size) svg += insignia((w - 4).toFixed(1), `${fueraDer.size} ▶`, "end", "der");
+
+  g.innerHTML = svg;
+  g.querySelectorAll(".piano-insignia-fuera").forEach(t => {
+    t.addEventListener("pointerdown", ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      // Primero las teclas que se están tocando; si no hay, donde suena
+      // algún astro. De ellas, la más cercana al rango visible.
+      const izq = t.dataset.lado === "izq";
+      const propias = izq ? pulsadasIzq : pulsadasDer;
+      const pasos = propias.length ? propias : [...(izq ? fueraIzq : fueraDer)];
+      const destino = izq ? Math.max(...pasos) : Math.min(...pasos);
+      asegurarPasoVisiblePiano(destino);
+    });
+  });
+}
+
+// Lleva a la vista la tecla de un paso: primero cambia el rango de
+// octavas si queda fuera del dibujo, y luego desplaza la barra
+// horizontal si el teclado es más ancho que su contenedor.
+function asegurarPasoVisiblePiano(paso) {
+  const cont = document.getElementById("piano-teclado");
+  if (!cont || !cont.offsetParent) return;   // plegado u oculto: nada que mostrar
+  const n = numMicrotonos;
+  const oct = piano.octavaDePaso(paso);
+
+  let base = piano.octavaBase;
+  if (oct < base) base = oct;
+  else if (oct >= base + piano.octavas) base = oct - piano.octavas + 1;
+  if (base !== piano.octavaBase && piano.panOctavas(base - piano.octavaBase)) {
+    renderPianoTeclado(true);
+    const octBase = document.getElementById("piano-octava-base");
+    if (octBase) octBase.value = piano.octavaBase;
+  }
+
+  const svgEl = cont.querySelector("svg");
+  if (!svgEl || cont.scrollWidth <= cont.clientWidth + 1) return;
+  const wTecla = (parseFloat(svgEl.getAttribute("width")) - PIANO_GEOM.margen * 2) / _pianoColumnas();
+  const x = PIANO_GEOM.margen + (paso - piano.octavaBase * n + 0.5) * wTecla;
+  const margen = Math.min(80, cont.clientWidth / 4);
+  if (x < cont.scrollLeft + margen || x > cont.scrollLeft + cont.clientWidth - margen) {
+    cont.scrollLeft = Math.max(0, x - cont.clientWidth / 2);
+  }
 }
 
 // Ratón / táctil sobre el teclado: pulsar, arrastrar (glissando) y
@@ -991,6 +1225,166 @@ function conectarTecladoPiano(cont) {
 // UI del panel
 // =========================================================
 
+function _pianoEscaparHTML(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[c]);
+}
+
+// Opciones del selector de controlador de un instrumento. Si el
+// controlador guardado no está conectado ahora, se conserva como opción
+// "(desconectado)" para no perder la asignación.
+function _opcionesEntradaPiano(inst) {
+  const entradas = (typeof MIDI !== "undefined") ? MIDI.inputs : [];
+  let html = `<option value="${PIANO_ENTRADA_TODAS}">Todos los controladores libres</option>` +
+             `<option value="${PIANO_ENTRADA_NINGUNA}">Ninguno (teclado en pantalla / PC)</option>`;
+  for (const d of entradas) {
+    html += `<option value="${_pianoEscaparHTML(d.id)}">🎛 ${_pianoEscaparHTML(d.name)}</option>`;
+  }
+  const especial = inst.entrada === PIANO_ENTRADA_TODAS || inst.entrada === PIANO_ENTRADA_NINGUNA;
+  if (!especial && !entradas.some(d => d.id === inst.entrada)) {
+    html += `<option value="${_pianoEscaparHTML(inst.entrada)}">⚠ ${_pianoEscaparHTML(inst.entradaNombre || "Controlador")} (desconectado)</option>`;
+  }
+  return html;
+}
+
+function _opcionesCanalPiano() {
+  let html = `<option value="0">Omni</option>`;
+  for (let c = 1; c <= 16; c++) html += `<option value="${c}">Canal ${c}</option>`;
+  return html;
+}
+
+// Lista de controladores MIDI detectados + tarjetas de instrumentos.
+function renderInstrumentosPiano() {
+  const disp = document.getElementById("piano-controladores");
+  if (disp) {
+    if (typeof MIDI === "undefined" || !MIDI.enabled) {
+      disp.innerHTML = `<span class="piano-ctrl-vacio">MIDI inactivo: actívalo en la sección 🎛 MIDI para ver tus controladores.</span>`;
+    } else if (!MIDI.inputs.length) {
+      disp.innerHTML = `<span class="piano-ctrl-vacio">Sin controladores MIDI conectados.</span>`;
+    } else {
+      disp.innerHTML = MIDI.inputs.map(d => {
+        const usados = piano.instrumentos.filter(i => i.entrada === d.id).map(i => i.nombre);
+        return `<span class="piano-ctrl${usados.length ? " asignado" : ""}" title="${usados.length ? "Tocando: " + _pianoEscaparHTML(usados.join(", ")) : "Sin instrumento propio (lo recibe 'Todos los controladores libres')"}">` +
+          `🎛 ${_pianoEscaparHTML(d.name)}` +
+          (usados.length ? ` → ${_pianoEscaparHTML(usados.join(", "))}` :
+            ` <button type="button" class="piano-ctrl-usar" data-id="${_pianoEscaparHTML(d.id)}" data-nombre="${_pianoEscaparHTML(d.name)}" title="Crear un instrumento para este controlador">✚ instrumento</button>`) +
+          `</span>`;
+      }).join("");
+      disp.querySelectorAll(".piano-ctrl-usar").forEach(btn => {
+        btn.addEventListener("click", () => {
+          piano.agregarInstrumento(btn.dataset.id, btn.dataset.nombre);
+          actualizarUIPiano();
+        });
+      });
+    }
+  }
+
+  const cont = document.getElementById("piano-instrumentos");
+  if (!cont) return;
+  // No reconstruir mientras se escribe un nombre (perdería el foco)
+  if (cont.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
+
+  const actual = piano.instActual();
+  cont.innerHTML = "";
+  for (const inst of piano.instrumentos) {
+    const fila = document.createElement("div");
+    fila.className = "piano-inst" + (inst === actual ? " seleccionado" : "");
+    fila.dataset.id = inst.id;
+    const simbolos = piano.astrosActivos(inst).map(k => SIMBOLOS_ASTROS[k]).join("") || "∅";
+    fila.innerHTML = `
+      <label class="piano-inst-sel" title="Tocar este instrumento con el teclado en pantalla / PC y editarlo abajo">
+        <input type="radio" name="piano-inst-sel"${inst === actual ? " checked" : ""}>
+      </label>
+      <input type="text" class="piano-inst-nombre" value="${_pianoEscaparHTML(inst.nombre)}" title="Nombre del instrumento (aparece en el mezclador)">
+      <span class="piano-inst-astros" title="Astros de este instrumento">${simbolos}</span>
+      <select class="piano-inst-entrada" title="Controlador MIDI que toca este instrumento">${_opcionesEntradaPiano(inst)}</select>
+      <select class="piano-inst-canal" title="Canal MIDI que escucha (Omni = todos)">${_opcionesCanalPiano()}</select>
+      <button type="button" class="piano-inst-timbre" title="Editar el conjunto de timbre de cada astro de este instrumento">🎛</button>
+      <button type="button" class="piano-inst-borrar" title="Eliminar instrumento"${piano.instrumentos.length <= 1 ? " disabled" : ""}>✕</button>
+    `;
+    cont.appendChild(fila);
+
+    fila.querySelector(".piano-inst-entrada").value = inst.entrada;
+    fila.querySelector(".piano-inst-canal").value = String(inst.canal);
+
+    fila.querySelector('input[type="radio"]').addEventListener("change", () => {
+      piano.seleccionarInstrumento(inst.id);
+      renderInstrumentosPiano();
+      actualizarUIPiano();
+    });
+    fila.querySelector(".piano-inst-nombre").addEventListener("change", e => {
+      piano.renombrarInstrumento(inst.id, e.target.value);
+      e.target.value = inst.nombre;
+    });
+    fila.querySelector(".piano-inst-entrada").addEventListener("change", e => {
+      const id = e.target.value;
+      const disp = (typeof MIDI !== "undefined") ? MIDI.inputs.find(d => d.id === id) : null;
+      piano.setEntradaInstrumento(inst.id, id, disp ? disp.name : inst.entradaNombre);
+      renderInstrumentosPiano();
+    });
+    fila.querySelector(".piano-inst-canal").addEventListener("change", e => {
+      piano.setCanalInstrumento(inst.id, parseInt(e.target.value, 10));
+    });
+    fila.querySelector(".piano-inst-timbre").addEventListener("click", () => {
+      editorTimbre.abrirPara(inst.id);
+    });
+    fila.querySelector(".piano-inst-borrar").addEventListener("click", () => {
+      if (!confirm(`¿Eliminar el instrumento "${inst.nombre}"?`)) return;
+      piano.eliminarInstrumento(inst.id);
+      actualizarUIPiano();
+    });
+  }
+}
+
+// Chips de astros del instrumento seleccionado: la casilla dice si el
+// astro toca en el instrumento; el símbolo abre su conjunto debajo.
+function renderAstrosPiano() {
+  const cont = document.getElementById("piano-astros");
+  if (!cont) return;
+  const inst = piano.instActual();
+  cont.innerHTML = synth.ordenSecuencia.map(k => `
+    <div class="piano-astro" id="piano-chip-${k}">
+      <input type="checkbox" id="piano-astro-${k}"${inst.astrosSel[k] ? " checked" : ""}
+             title="${NOMBRES_ASTROS[k]} toca en este instrumento">
+      <button type="button" class="piano-astro-simbolo" data-astro="${k}" style="color:${COLORES_ASTROS_DEFAULT[k]}"
+              title="Ver y editar el conjunto de ${NOMBRES_ASTROS[k]} (ganancia, octava, onda, armónicos, filtros, ADSR…)">${SIMBOLOS_ASTROS[k]}</button>
+    </div>
+  `).join("");
+
+  for (let k = 0; k < 10; k++) {
+    document.getElementById(`piano-astro-${k}`)?.addEventListener("change", e => {
+      piano.setAstroSel(k, e.target.checked);
+      // Al sumar un astro se muestra su conjunto para ajustarlo de una vez
+      if (e.target.checked) piano.astroConjunto = k;
+      actualizarUIPiano();
+    });
+  }
+  cont.querySelectorAll(".piano-astro-simbolo").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const k = parseInt(btn.dataset.astro, 10);
+      piano.astroConjunto = (piano.astroConjunto === k) ? null : k;
+      actualizarUIPiano();
+    });
+  });
+}
+
+// Conjunto del astro elegido, en línea debajo de los chips. Solo se
+// reconstruye si cambió el instrumento o el astro (no en cada refresco).
+let _pianoConjuntoClave = "";
+function renderConjuntoPiano(forzar) {
+  const cont = document.getElementById("piano-conjunto");
+  if (!cont) return;
+  const inst = piano.instActual();
+  const clave = inst.id + "|" + piano.astroConjunto;
+  for (let k = 0; k < 10; k++) {
+    document.getElementById(`piano-chip-${k}`)?.classList.toggle("editando", k === piano.astroConjunto);
+  }
+  if (!forzar && clave === _pianoConjuntoClave) return;
+  _pianoConjuntoClave = clave;
+  renderConjuntoAstro(cont, inst.id, piano.astroConjunto);
+}
+
 function inicializarUIPiano() {
   const activo = document.getElementById("piano-activo");
   if (activo) {
@@ -1001,23 +1395,15 @@ function inicializarUIPiano() {
     });
   }
 
-  // Astros-instrumento
-  const cont = document.getElementById("piano-astros");
-  if (cont) {
-    cont.innerHTML = synth.ordenSecuencia.map(k => `
-      <label class="piano-astro" title="${NOMBRES_ASTROS[k]} como instrumento del piano">
-        <input type="checkbox" id="piano-astro-${k}"${piano.astrosSel[k] ? " checked" : ""}>
-        <span style="color:${COLORES_ASTROS_DEFAULT[k]}">${SIMBOLOS_ASTROS[k]}</span>
-      </label>
-    `).join("");
+  document.getElementById("piano-inst-agregar")?.addEventListener("click", () => {
+    piano.agregarInstrumento(PIANO_ENTRADA_NINGUNA, "");
+    actualizarUIPiano();
+  });
+  document.getElementById("piano-inst-timbre")?.addEventListener("click", () => {
+    editorTimbre.abrirPara(piano.instActual().id);
+  });
 
-    for (let k = 0; k < 10; k++) {
-      document.getElementById(`piano-astro-${k}`)?.addEventListener("change", e => {
-        piano.setAstroSel(k, e.target.checked);
-        actualizarMarcadoresPiano();
-      });
-    }
-  }
+  renderAstrosPiano();
 
   document.getElementById("piano-sel-todos")?.addEventListener("click", () => {
     piano.seleccionarTodos(true);
@@ -1030,9 +1416,10 @@ function inicializarUIPiano() {
   document.getElementById("piano-panico")?.addEventListener("click", () => piano.soltarTodo());
 
   document.querySelectorAll('input[name="piano-ruteo"]').forEach(radio => {
-    radio.checked = (radio.value === piano.ruteo);
+    radio.checked = (radio.value === piano.instActual().ruteo);
     radio.addEventListener("change", e => {
       if (e.target.checked) piano.setRuteo(e.target.value);
+      actualizarUIPiano();
     });
   });
 
@@ -1096,18 +1483,19 @@ function inicializarUIPiano() {
 
   const volGen = document.getElementById("piano-volumen-general");
   if (volGen) {
-    volGen.value = piano.volumenGeneral;
+    volGen.value = piano.instActual().volumen;
     volGen.addEventListener("input", e => {
       piano.setVolumenGeneral(parseFloat(e.target.value));
       const et = document.getElementById("piano-vol-general-val");
-      if (et) et.textContent = Math.round(piano.volumenGeneral * 100) + "%";
+      if (et) et.textContent = Math.round(piano.instActual().volumen * 100) + "%";
     });
   }
 
   const checks = [
     ["piano-sostener",   v => piano.setSostener(v),   () => piano.sostener],
     ["piano-teclado-pc", v => piano.setTecladoPC(v),  () => piano.tecladoPC],
-    ["piano-midi",       v => piano.setMidiEntrada(v), () => piano.midiEntrada]
+    ["piano-midi",       v => piano.setMidiEntrada(v), () => piano.midiEntrada],
+    ["piano-seguir",     v => piano.setSeguirNotas(v), () => piano.seguirNotas]
   ];
   for (const [id, set, get] of checks) {
     const el = document.getElementById(id);
@@ -1116,6 +1504,7 @@ function inicializarUIPiano() {
     el.addEventListener("change", e => set(e.target.checked));
   }
 
+  renderInstrumentosPiano();
   renderPianoTeclado(true);
   actualizarUIPiano();
 
@@ -1126,16 +1515,25 @@ function inicializarUIPiano() {
 }
 
 function actualizarUIPiano() {
+  const inst = piano.instActual();
+
   const activo = document.getElementById("piano-activo");
   if (activo) activo.checked = piano.activo;
 
+  renderInstrumentosPiano();
+
   for (let k = 0; k < 10; k++) {
     const chk = document.getElementById(`piano-astro-${k}`);
-    if (chk) chk.checked = piano.astrosSel[k];
+    if (chk) chk.checked = inst.astrosSel[k];
   }
 
+  const titulo = document.getElementById("piano-inst-actual");
+  if (titulo) titulo.textContent = inst.nombre;
+
+  renderConjuntoPiano();
+
   document.querySelectorAll('input[name="piano-ruteo"]').forEach(r => {
-    r.checked = (r.value === piano.ruteo);
+    r.checked = (r.value === inst.ruteo);
   });
 
   const foco = document.getElementById("piano-astro-foco");
@@ -1147,19 +1545,20 @@ function actualizarUIPiano() {
   const velVal = document.getElementById("piano-vel-val");
   if (velVal) velVal.textContent = Math.round(piano.velocidad * 100) + "%";
 
+  const volGen = document.getElementById("piano-volumen-general");
+  if (volGen && document.activeElement !== volGen) volGen.value = inst.volumen;
   const volGeneralVal = document.getElementById("piano-vol-general-val");
-  if (volGeneralVal) volGeneralVal.textContent = Math.round(piano.volumenGeneral * 100) + "%";
+  if (volGeneralVal) volGeneralVal.textContent = Math.round(inst.volumen * 100) + "%";
 
   const sec = document.getElementById("seccion-piano");
   if (sec) sec.classList.toggle("piano-encendido", piano.activo);
 
   const estadoTxt = document.getElementById("piano-estado");
   if (estadoTxt) {
-    const n = piano.astrosActivos().length;
-    const cadena = piano.astrosActivos().map(k => SIMBOLOS_ASTROS[k]).join(
-      piano.ruteo === "serie" ? " → " : " + ");
-    estadoTxt.textContent = n
-      ? `${cadena}  (${piano.ruteo === "serie" ? "el último modula al primero, que sale" : "suma aditiva"})`
+    const activos = piano.astrosActivos(inst);
+    const cadena = activos.map(k => SIMBOLOS_ASTROS[k]).join(inst.ruteo === "serie" ? " → " : " + ");
+    estadoTxt.textContent = activos.length
+      ? `${cadena}  (${inst.ruteo === "serie" ? "el último modula al primero, que sale" : "suma aditiva"})`
       : "Ningún astro seleccionado: elige al menos uno.";
   }
 

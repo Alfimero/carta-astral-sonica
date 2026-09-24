@@ -3,7 +3,8 @@
 // =========================================================
 //
 // Vista + control de una consola de mezcla flotante con un canal por
-// Maestro, Secuenciador, Piano y cada uno de los 10 astros. Cada canal
+// Maestro, Secuenciador 1, Secuenciador 2, cada instrumento del piano y
+// cada uno de los 10 astros. Cada canal
 // es un fader vertical con medidor de pico/RMS, botones Mute/Solo y
 // un pan.
 //
@@ -79,7 +80,7 @@ const mezclador = {
       },
       {
         id: "secuenciador",
-        etiqueta: "Secuenciador",
+        etiqueta: "Secuenciador 1",
         color: "var(--accent-soft)",
         panable: true,
         muteable: true,
@@ -97,27 +98,55 @@ const mezclador = {
         salida: () => synth.salidaSecuenciador,
         setSalida: id => synth.setSalidaSecuenciador(id)
       },
-      {
-        id: "piano",
-        etiqueta: "Piano",
+    ];
+    if (typeof secuenciador2 !== "undefined") {
+      const s2 = secuenciador2;
+      canales.push({
+        id: "secuenciador2",
+        etiqueta: "Secuenciador 2",
         color: "var(--accent-soft)",
         panable: true,
         muteable: true,
-        volumen: () => piano.volumenGeneral,
-        setVolumen: v => piano.setVolumenGeneral(v),
-        pan: () => piano.panValor,
-        setPan: v => piano.setPan(v),
-        muted: () => piano.muted,
-        setMuted: on => piano.setMuted(on),
-        solo: () => piano.solo,
-        setSolo: on => piano.setSolo(on),
-        analyser: () => piano.meterPiano,
-        enMaster: () => piano.enMaster,
-        setEnMaster: on => piano.setEnMaster(on),
-        salida: () => piano.salida,
-        setSalida: id => piano.setSalida(id)
-      }
-    ];
+        volumen: () => s2.volumen,
+        setVolumen: v => s2.setVolumen(v),
+        pan: () => s2.pan,
+        setPan: v => s2.setPan(v),
+        muted: () => s2.muted,
+        setMuted: on => s2.setMuted(on),
+        solo: () => s2.solo,
+        setSolo: on => s2.setSolo(on),
+        analyser: () => s2.meter,
+        enMaster: () => s2.enMaster,
+        setEnMaster: on => s2.setEnMaster(on),
+        salida: () => s2.salida,
+        setSalida: id => s2.setSalida(id)
+      });
+    }
+    // Un canal por instrumento del piano (se reconstruyen al crear,
+    // borrar o renombrar instrumentos: ver reconstruir()).
+    for (const inst of piano.instrumentos) {
+      const id = inst.id;
+      canales.push({
+        id: "inst:" + id,
+        etiqueta: "🎹 " + inst.nombre,
+        color: "var(--accent-soft)",
+        panable: true,
+        muteable: true,
+        volumen: () => inst.volumen,
+        setVolumen: v => piano.setVolumenInstrumento(id, v),
+        pan: () => inst.pan,
+        setPan: v => piano.setPanInstrumento(id, v),
+        muted: () => inst.muted,
+        setMuted: on => piano.setMutedInstrumento(id, on),
+        solo: () => inst.solo,
+        setSolo: on => piano.setSoloInstrumento(id, on),
+        analyser: () => inst.meter,
+        enMaster: () => inst.enMaster,
+        setEnMaster: on => piano.setEnMasterInstrumento(id, on),
+        salida: () => inst.salida,
+        setSalida: sid => piano.setSalidaInstrumento(id, sid)
+      });
+    }
     for (let k = 0; k < 10; k++) {
       canales.push({
         id: "astro" + k,
@@ -141,6 +170,20 @@ const mezclador = {
       });
     }
     return canales;
+  },
+
+  // Vuelve a armar los canales (p. ej. al crear o borrar un instrumento
+  // del piano). Si la ventana aún no existe no hay nada que hacer: se
+  // arma con la lista vigente al abrirla.
+  reconstruir() {
+    const vent = document.getElementById("ventana-mezclador");
+    if (!vent) return;
+    this._canales = this._descriptorCanales();
+    const cuerpo = vent.querySelector(".mezclador-canales");
+    cuerpo.innerHTML = "";
+    for (const c of this._canales) cuerpo.appendChild(this._construirCanal(c));
+    this._refrescarSelectsSalida();
+    this._refrescarControles();
   },
 
   // -------------------- Construcción del DOM --------------------

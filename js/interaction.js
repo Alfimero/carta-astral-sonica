@@ -224,7 +224,6 @@ function inicializarUISintetizador() {
 function inicializarEditorADSR() {
   const sel = document.getElementById("adsr-astro");
   const cont = document.getElementById("adsr-grafico");
-  const valores = document.getElementById("adsr-valores");
   if (!sel || !cont) return;
 
   sel.innerHTML = `<option value="-1">Todos los astros</option>` +
@@ -232,167 +231,21 @@ function inicializarEditorADSR() {
       `<option value="${i}">${SIMBOLOS_ASTROS[i]} ${n}</option>`
     ).join("");
 
+  // El editor en sí (vértices, rombos de curvatura, valores) vive en
+  // timbre.js: es el mismo que usan los conjuntos del piano y del
+  // Secuenciador 2.
   let objetivo = -1;
-  const adsrActual = () => (objetivo === -1) ? synth.adsr : synth.adsrAstro[objetivo];
-  const curvaActual = () => (objetivo === -1) ? synth.adsrCurva : synth.adsrCurvaAstro[objetivo];
-
-  // Forma del tramo con curvatura c ∈ [-1, 1]: f(u) = u^(2^(2c))
-  const fCurva = (u, c) => Math.pow(u, Math.pow(2, c * 2));
-
-  // Geometría del gráfico (coordenadas del viewBox)
-  const W = 380, H = 120, PAD = 12;
-  const ZA = 90, ZD = 90, ZS = 50, ZR = 110;   // zonas A, D, plateau S, R
-  const MAX_A = 3, MAX_D = 3, MAX_R = 5;
-  const yTop = PAD, yBase = H - PAD;
-
-  // Escala sqrt: da resolución a los tiempos cortos
-  const xA = a => PAD + Math.sqrt(a / MAX_A) * ZA;
-  const xD = (a, d) => xA(a) + Math.sqrt(d / MAX_D) * ZD;
-  const xS = (a, d) => xD(a, d) + ZS;
-  const xR = (a, d, r) => xS(a, d) + Math.sqrt(r / MAX_R) * ZR;
-  const yS = s => yTop + (1 - s) * (yBase - yTop);
-
-  const fmt = adsr =>
-    `A ${adsr.attack.toFixed(2)}s · D ${adsr.decay.toFixed(2)}s · ` +
-    `S ${Math.round(adsr.sustain * 100)}% · R ${adsr.release.toFixed(2)}s`;
-
-  // Tramo muestreado con curvatura: de (xDe,yDe) a (xHasta,yHasta)
-  const tramoCurvo = (xDe, yDe, xHasta, yHasta, c) => {
-    let s = "";
-    for (let k = 1; k <= 14; k++) {
-      const u = k / 14;
-      const x = xDe + (xHasta - xDe) * u;
-      const y = yDe + (yHasta - yDe) * fCurva(u, c);
-      s += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
-    }
-    return s;
-  };
-
-  function render() {
-    const e = adsrActual();
-    const c = curvaActual();
-    const x1 = xA(e.attack), x2 = xD(e.attack, e.decay);
-    const x3 = xS(e.attack, e.decay), x4 = xR(e.attack, e.decay, e.release);
-    const ys = yS(e.sustain);
-
-    let d = `M ${PAD} ${yBase}`;
-    d += tramoCurvo(PAD, yBase, x1, yTop, c.attack);
-    d += tramoCurvo(x1, yTop, x2, ys, c.decay);
-    d += ` L ${x3} ${ys}`;
-    d += tramoCurvo(x3, ys, x4, yBase, c.release);
-
-    // Handles de curvatura en el centro de cada tramo (sobre la curva)
-    const ymA = yBase + (yTop - yBase) * fCurva(0.5, c.attack);
-    const ymD = yTop + (ys - yTop) * fCurva(0.5, c.decay);
-    const ymR = ys + (yBase - ys) * fCurva(0.5, c.release);
-
-    cont.innerHTML = `
-      <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" class="adsr-svg">
-        <line x1="${PAD}" y1="${yBase}" x2="${W - PAD}" y2="${yBase}" stroke="#ccc" stroke-width="1"/>
-        <path d="${d} Z" fill="rgba(60,94,158,0.14)" stroke="none"/>
-        <path d="${d}" fill="none" stroke="#3c5e9e" stroke-width="2"/>
-        <line x1="${x2}" y1="${ys}" x2="${x3}" y2="${ys}" stroke="#3c5e9e" stroke-width="2" stroke-dasharray="3 2"/>
-        <rect class="adsr-curva-handle" data-c="attack" x="${((PAD + x1) / 2 - 4.5).toFixed(1)}" y="${(ymA - 4.5).toFixed(1)}" width="9" height="9" transform="rotate(45 ${((PAD + x1) / 2).toFixed(1)} ${ymA.toFixed(1)})"/>
-        <rect class="adsr-curva-handle" data-c="decay" x="${((x1 + x2) / 2 - 4.5).toFixed(1)}" y="${(ymD - 4.5).toFixed(1)}" width="9" height="9" transform="rotate(45 ${((x1 + x2) / 2).toFixed(1)} ${ymD.toFixed(1)})"/>
-        <rect class="adsr-curva-handle" data-c="release" x="${((x3 + x4) / 2 - 4.5).toFixed(1)}" y="${(ymR - 4.5).toFixed(1)}" width="9" height="9" transform="rotate(45 ${((x3 + x4) / 2).toFixed(1)} ${ymR.toFixed(1)})"/>
-        <circle class="adsr-handle" data-h="a" cx="${x1}" cy="${yTop}" r="7"/>
-        <circle class="adsr-handle" data-h="ds" cx="${x2}" cy="${ys}" r="7"/>
-        <circle class="adsr-handle" data-h="r" cx="${x4}" cy="${yBase}" r="7"/>
-        <text x="${x1}" y="${yTop - 3}" text-anchor="middle" class="adsr-etiqueta">A</text>
-        <text x="${x2}" y="${ys - 10}" text-anchor="middle" class="adsr-etiqueta">D/S</text>
-        <text x="${x4}" y="${yBase - 10}" text-anchor="middle" class="adsr-etiqueta">R</text>
-      </svg>
-    `;
-    if (valores) valores.textContent = fmt(e);
-    conectarHandles();
-  }
-
-  function conectarHandles() {
-    const svg = cont.querySelector("svg");
-    if (!svg) return;
-
-    // render() reconstruye el SVG durante el arrastre: usar siempre el vivo
-    const aViewBox = ev => {
-      const svgVivo = cont.querySelector("svg") || svg;
-      const rect = svgVivo.getBoundingClientRect();
-      return {
-        x: (ev.clientX - rect.left) * (W / rect.width),
-        y: (ev.clientY - rect.top) * (H / rect.height)
-      };
-    };
-
-    svg.querySelectorAll(".adsr-handle").forEach(handle => {
-      handle.addEventListener("pointerdown", ev => {
-        ev.preventDefault();
-        const tipo = handle.dataset.h;
-
-        const mover = e2 => {
-          const p = aViewBox(e2);
-          const adsr = adsrActual();
-          if (tipo === "a") {
-            const t = clamp((p.x - PAD) / ZA, 0, 1);
-            synth.setADSRAstro(objetivo, "attack", Math.max(0.001, t * t * MAX_A));
-          } else if (tipo === "ds") {
-            const t = clamp((p.x - xA(adsr.attack)) / ZD, 0, 1);
-            synth.setADSRAstro(objetivo, "decay", Math.max(0.001, t * t * MAX_D));
-            const s = clamp(1 - (p.y - yTop) / (yBase - yTop), 0, 1);
-            synth.setADSRAstro(objetivo, "sustain", s);
-          } else if (tipo === "r") {
-            const t = clamp((p.x - xS(adsr.attack, adsr.decay)) / ZR, 0, 1);
-            synth.setADSRAstro(objetivo, "release", Math.max(0.001, t * t * MAX_R));
-          }
-          render();
-        };
-
-        const soltar = () => {
-          window.removeEventListener("pointermove", mover);
-          window.removeEventListener("pointerup", soltar);
-        };
-        window.addEventListener("pointermove", mover);
-        window.addEventListener("pointerup", soltar);
-      });
-    });
-
-    // Handles de curvatura (rombos): arrastrar verticalmente desde el
-    // centro del tramo lo curva como un arco (c = 0 vuelve a lineal)
-    svg.querySelectorAll(".adsr-curva-handle").forEach(handle => {
-      handle.addEventListener("pointerdown", ev => {
-        ev.preventDefault();
-        const param = handle.dataset.c;
-
-        const mover = e2 => {
-          const p = aViewBox(e2);
-          const adsr = adsrActual();
-          const ys = yS(adsr.sustain);
-          // Extremos verticales del tramo (valor inicial → final)
-          let yDe, yHasta;
-          if (param === "attack")     { yDe = yBase; yHasta = yTop; }
-          else if (param === "decay") { yDe = yTop;  yHasta = ys; }
-          else                        { yDe = ys;    yHasta = yBase; }
-          if (Math.abs(yHasta - yDe) < 3) return;  // tramo plano: nada que curvar
-          // Curvatura cuya f(0.5) hace pasar el tramo por el puntero
-          const f = clamp((p.y - yDe) / (yHasta - yDe), 0.04, 0.96);
-          const gamma = Math.log(f) / Math.log(0.5);
-          synth.setADSRCurva(objetivo, param, clamp(Math.log2(gamma) / 2, -1, 1));
-          render();
-        };
-
-        const soltar = () => {
-          window.removeEventListener("pointermove", mover);
-          window.removeEventListener("pointerup", soltar);
-        };
-        window.addEventListener("pointermove", mover);
-        window.addEventListener("pointerup", soltar);
-      });
-    });
-  }
+  const editor = crearEditorADSR(cont, {
+    adsr: () => (objetivo === -1) ? synth.adsr : synth.adsrAstro[objetivo],
+    curva: () => (objetivo === -1) ? synth.adsrCurva : synth.adsrCurvaAstro[objetivo],
+    set: (param, v) => synth.setADSRAstro(objetivo, param, v),
+    setCurva: (param, v) => synth.setADSRCurva(objetivo, param, v)
+  });
 
   sel.addEventListener("change", () => {
     objetivo = parseInt(sel.value, 10);
-    render();
+    editor.render();
   });
-
-  render();
 }
 
 function inicializarSecuenciador() {
@@ -1315,7 +1168,7 @@ function actualizarFilasSonando() {
   for (let i = 0; i < 10; i++) {
     const fila = document.getElementById(`synth-row-${i}`);
     if (!fila) continue;
-    const suena = astroSonando(i);
+    const suena = astroSonando(i, true);
     const momentaneo = suena && (synth.envelopeActiva[i] || synth.sonandoEnSecuencia(i));
     fila.classList.toggle("sonando", momentaneo);
     fila.classList.toggle("sonando-drone", suena && !momentaneo);
@@ -1682,7 +1535,12 @@ function inicializarUIMIDI() {
     chkAstros.addEventListener("change", e => synth.setMidiAstros(e.target.checked));
   }
 
-  MIDI.onChange = () => { renderEstadoMIDI(); renderMapeosMIDI(); };
+  MIDI.onChange = () => {
+    renderEstadoMIDI();
+    renderMapeosMIDI();
+    // El piano lista los controladores para asignarlos a sus instrumentos
+    if (typeof renderInstrumentosPiano === "function") renderInstrumentosPiano();
+  };
   renderEstadoMIDI();
   inicializarUIMapeosMIDI();
 }
@@ -2281,7 +2139,33 @@ function _aplicarAltoDock(alto) {
   const max = Math.max(DOCK_ALTO_MIN, Math.round(window.innerHeight * 0.82));
   const h = clamp(alto, DOCK_ALTO_MIN, max);
   dock.style.height = h + "px";
+  // Alto de las columnas fijas del piano (style.css, .piano-col): lo que
+  // queda de la bandeja tras la barra, el título y el teclado (~260 px),
+  // para que el teclado siga a la vista y cada columna se desplace sola.
+  dock.style.setProperty("--piano-col-alto", Math.max(180, h - 260) + "px");
+  _reservarEspacioDock(dock.hidden ? 0 : h);
   return h;
+}
+
+// La bandeja ya no se encima: su alto se publica en --alto-dock y el
+// layout (carta + panel lateral) se acorta a lo que queda arriba
+// (style.css, .layout). El canvas de p5 no se entera solo de que su
+// contenedor cambió, así que se le pide redimensionar — agrupado cada
+// ~30 ms, porque al arrastrar el borde llegan muchos eventos. Es un
+// setTimeout y no requestAnimationFrame: con la pestaña oculta o
+// minimizada rAF se congela y el canvas quedaría con el tamaño viejo.
+let _altoDockReservado = -1;
+let _redimensionPendiente = null;
+function _reservarEspacioDock(alto) {
+  if (alto === _altoDockReservado) return;
+  _altoDockReservado = alto;
+  document.documentElement.style.setProperty("--alto-dock", alto + "px");
+  document.body.classList.toggle("con-dock", alto > 0);
+  if (_redimensionPendiente) return;
+  _redimensionPendiente = setTimeout(() => {
+    _redimensionPendiente = null;
+    if (typeof onResize === "function") onResize();
+  }, 30);
 }
 
 function _construirDockPanel() {
@@ -2382,6 +2266,7 @@ function cerrarDock() {
   const actual = dock.querySelector(".panel-section, details.panel-colapsable");
   if (actual) _reanclarSeccion(actual);
   dock.hidden = true;
+  _reservarEspacioDock(0);
   _panelVentanas.dock.slug = null;
   _guardarPanelVentanas();
 }

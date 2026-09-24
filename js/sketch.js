@@ -18,8 +18,10 @@ function obtenerDimensionesCanvas() {
   if (w < 100 || h < 100) {
     // Fallback: usar window menos el panel derecho (500px)
     const anchoPanel = (document.body.classList.contains("dev-mode")) ? (290 + 440) : 500;
+    // Con la bandeja inferior abierta, la carta solo tiene lo de arriba
+    const altoDock = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--alto-dock")) || 0;
     w = Math.max(400, window.innerWidth - anchoPanel);
-    h = Math.max(400, window.innerHeight);
+    h = Math.max(120, window.innerHeight - altoDock);
     console.warn("[setup] El contenedor #wheel-canvas reportó tamaño insuficiente; usando fallback:", w, "×", h);
   }
 
@@ -33,6 +35,8 @@ function setup() {
 
   const cnv = createCanvas(w, h);
   cnv.parent("wheel-canvas");
+  // Modo ligero (equipos viejos): densidad 1× y 30 fps (arranque.js)
+  if (typeof configurarRendimiento === "function") configurarRendimiento();
 
   textAlign(CENTER, CENTER);
   textFont("system-ui");
@@ -48,6 +52,8 @@ function setup() {
   if (typeof inicializarUIGeo === "function") inicializarUIGeo();
   if (typeof inicializarUINotas === "function") inicializarUINotas();
   if (typeof inicializarUIPiano === "function") inicializarUIPiano();
+  if (typeof inicializarUISecuenciador2 === "function") inicializarUISecuenciador2();
+  if (typeof inicializarUIArranque === "function") inicializarUIArranque();
   if (typeof inicializarUIMezclador === "function") inicializarUIMezclador();
   if (typeof inicializarUIRackSintetizadores === "function") inicializarUIRackSintetizadores();
   if (typeof inicializarPanelVentanas === "function") inicializarPanelVentanas();
@@ -56,6 +62,9 @@ function setup() {
   console.log("[setup] astros.length=", estado.astros.length, "casas.length=", estado.casas.length);
 
   window.addEventListener("resize", onResize);
+
+  // Todo encendido al abrir (audio, astros, MIDI) menos los secuenciadores
+  if (typeof iniciarArranqueAutomatico === "function") iniciarArranqueAutomatico();
 
   if (typeof inicializarDevPanel === "function") {
     inicializarDevPanel();
@@ -118,6 +127,9 @@ function draw() {
 
     if (typeof actualizarFilasSonando === "function") {
       actualizarFilasSonando();
+    }
+    if (typeof actualizarFilasSecuenciador2 === "function") {
+      actualizarFilasSecuenciador2();
     }
 
     // Eslabón de la cadena de ritmos que suena (solo repinta si cambió)

@@ -31,3 +31,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Copias locales de las librerías (las descargan los lanzadores)
+vendor/

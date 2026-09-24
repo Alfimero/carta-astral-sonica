@@ -6,8 +6,8 @@
 //   - Web MIDI requiere HTTPS o localhost para que el browser
 //     permita el acceso. En localhost funciona sin pedir permisos
 //     adicionales en Chrome; en Firefox puede pedir confirmación.
-//   - Llamamos requestMIDIAccess() solo cuando el usuario activa
-//     MIDI desde la UI (botón).
+//   - requestMIDIAccess() se llama al abrir el programa si el arranque
+//     automático lo tiene activado (arranque.js), o desde el botón.
 //
 // Mensajes que escuchamos:
 //   Note On  (0x90, nota, vel>0)  → dispara banco con esa nota
@@ -17,6 +17,10 @@
 //
 // Orden de prioridad de una nota entrante:
 //   captura → bancos → mapeos de parámetros → piano → astros → envelope
+//
+// Cada mensaje llega con el id del controlador que lo mandó: el piano
+// lo usa para repartir las notas entre sus instrumentos (cada
+// instrumento puede escuchar un controlador distinto).
 //
 // Modo "captura": cuando el usuario quiere asignar una nota MIDI
 // a un banco, ponemos capturaPendiente al ID del banco y la
@@ -65,9 +69,10 @@ const MIDI = {
     if (!this.access) return;
     this.inputs = [];
     this.access.inputs.forEach(input => {
-      input.onmidimessage = (msg) => this._onMessage(msg);
+      input.onmidimessage = (msg) => this._onMessage(msg, input.id);
       this.inputs.push({ id: input.id, name: input.name, manufacturer: input.manufacturer });
     });
+    if (typeof piano !== "undefined") piano.resolverEntradas(this.inputs);
     this._notifyChange();
   },
 
@@ -87,7 +92,12 @@ const MIDI = {
     if (typeof this.onChange === "function") this.onChange();
   },
 
-  _onMessage(msg) {
+  _onMessage(msg, entradaId) {
+    // Si el audio sigue suspendido (el navegador espera un gesto), lo
+    // intentamos reanudar: en Chrome con --autoplay-policy funciona.
+    if (typeof synth !== "undefined" && synth.ctx && synth.ctx.state === "suspended") {
+      synth.ctx.resume().catch(() => {});
+    }
     const data = msg.data;
     if (!data || data.length < 2) return;
     const status = data[0];
@@ -98,10 +108,10 @@ const MIDI = {
 
     if (type === 0x90 && d2 > 0) {
       // Note On
-      this._onNoteOn(d1, d2, canal);
+      this._onNoteOn(d1, d2, canal, entradaId);
     } else if (type === 0x80 || (type === 0x90 && d2 === 0)) {
       // Note Off
-      this._onNoteOff(d1, canal);
+      this._onNoteOff(d1, canal, entradaId);
     } else if (type === 0xB0) {
       this._onCC(d1, d2, canal);
     }
@@ -121,7 +131,7 @@ const MIDI = {
     return (typeof astro === "number") ? astro : -1;
   },
 
-  _onNoteOn(nota, velocidad, canal) {
+  _onNoteOn(nota, velocidad, canal, entradaId) {
     // 1) Si hay captura pendiente, asignar la nota
     if (this.capturaPendiente) {
       const id = this.capturaPendiente;
@@ -141,11 +151,9 @@ const MIDI = {
     if (typeof mapeoMIDI !== "undefined" && mapeoMIDI.manejarNoteOn(nota, canal)) return;
 
     // 4) Modo piano: el controlador toca la escala microtonal completa
-    //    (una tecla = un microtono), independiente del secuenciador
-    if (typeof piano !== "undefined" && piano.midiActivo()) {
-      piano.midiNoteOn(nota, velocidad);
-      return;
-    }
+    //    (una tecla = un microtono) con el instrumento que lo escucha,
+    //    independiente del secuenciador
+    if (typeof piano !== "undefined" && piano.midiNoteOn(nota, velocidad, entradaId, canal)) return;
 
     // 5) Mapeo de astros C4-A4: tocar ese astro junto con su grupo FM
     //    (los conectados deben sonar a la vez para que la FM funcione)
@@ -169,17 +177,14 @@ const MIDI = {
     }
   },
 
-  _onNoteOff(nota, canal) {
+  _onNoteOff(nota, canal, entradaId) {
     // Los mapeos de parámetros son disparos puntuales: el note off no
     // deshace nada, pero tampoco debe llegar al piano ni a los astros
     // si la nota pertenece a un mapeo.
     if (typeof mapeoMIDI !== "undefined" && mapeoMIDI.notaDeMapeo(nota, canal)) return;
 
     // Modo piano: soltar la tecla de la escala microtonal
-    if (typeof piano !== "undefined" && piano.midiActivo()) {
-      piano.midiNoteOff(nota);
-      return;
-    }
+    if (typeof piano !== "undefined" && piano.midiNoteOff(nota, entradaId, canal)) return;
 
     // Mapeo de astros C4-A4: soltar ese astro y su grupo FM
     if (synth.midiAstros) {

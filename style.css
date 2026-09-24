@@ -38,11 +38,14 @@ html, body {
 input[type="range"] { accent-color: var(--accent); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent-soft); }
 
+/* --alto-dock: alto de la bandeja inferior abierta (0 si está cerrada);
+   lo pone _reservarEspacioDock() en interaction.js. Carta y panel
+   lateral ocupan solo lo que queda arriba, en vez de quedar tapados. */
 .layout {
   display: grid;
   grid-template-columns: 1fr 500px;
-  grid-template-rows: 100vh;
-  height: 100vh;
+  grid-template-rows: 100%;
+  height: calc(100vh - var(--alto-dock, 0px));
   width: 100vw;
 }
 
@@ -160,7 +163,7 @@ body.panel-translucido .panel {
   position: fixed;
   top: 0;
   right: 0;
-  height: 100vh;
+  height: calc(100vh - var(--alto-dock, 0px));
   width: 500px;
   z-index: 30;
   background: rgba(19, 16, 34, var(--panel-alpha, 1));
@@ -2209,19 +2212,6 @@ details.panel-colapsable { position: relative; }
   border-radius: 5px;
   background: var(--bg-panel);
 }
-.rack-adsr-svg {
-  display: block;
-  width: 100%;
-  height: 64px;
-}
-.rack-adsr-handle {
-  fill: #8a76c9;
-  stroke: #1a1530;
-  stroke-width: 1;
-  cursor: pointer;
-  touch-action: none;
-}
-.rack-adsr-handle:hover { fill: var(--accent); }
 
 /* ---------- Bandeja inferior ---------- */
 /* Contenedor fijo al fondo de la pantalla, redimensionable en alto
@@ -2390,7 +2380,7 @@ details.panel-colapsable { position: relative; }
 /* ---------- Modo dev ---------- */
 body.dev-mode .layout {
   grid-template-columns: 290px 1fr 440px;
-  grid-template-rows: 100vh;
+  grid-template-rows: 100%;
   grid-template-areas: "dev wheel panel";
 }
 body.dev-mode .wheel { grid-area: wheel; }
@@ -2533,8 +2523,8 @@ body.dev-mode.panel-oculto .panel { display: none; }
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: 60vh 40vh;
-    height: 100vh;
+    grid-template-rows: 60% 40%;
+    height: calc(100vh - var(--alto-dock, 0px));
   }
   .panel {
     border-left: none;
@@ -2542,3 +2532,250 @@ body.dev-mode.panel-oculto .panel { display: none; }
   }
   .synth-modes { grid-template-columns: 1fr; }
 }
+
+/* ---------- Piano: instrumentos (un controlador + astros + timbre cada uno) ---------- */
+.piano-controladores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0 6px;
+  font-size: 11px;
+}
+.piano-ctrl {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--campo-borde);
+  border-radius: 10px;
+  background: var(--campo);
+  color: var(--text-soft);
+}
+.piano-ctrl.asignado { border-color: var(--accent); color: var(--text); }
+.piano-ctrl-usar {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 8px;
+}
+.piano-ctrl-vacio { color: var(--text-soft); font-style: italic; }
+.piano-instrumentos {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.piano-inst {
+  display: grid;
+  grid-template-columns: 18px minmax(50px, 1fr) auto minmax(64px, 1.3fr) 60px 26px 24px;
+  gap: 4px;
+  align-items: center;
+  padding: 3px 5px;
+  border: 1px solid rgba(138, 118, 201, 0.16);
+  border-radius: 5px;
+  background: rgba(233, 226, 242, 0.04);
+  font-size: 11px;
+}
+.piano-inst.seleccionado {
+  border-color: var(--accent);
+  background: rgba(201, 164, 92, 0.1);
+}
+.piano-inst input[type="radio"] { margin: 0; }
+.piano-inst input[type="text"],
+.piano-inst select {
+  min-width: 0;
+  font-size: 11px;
+  padding: 2px 3px;
+  background: var(--campo);
+  border: 1px solid var(--campo-borde);
+  border-radius: 4px;
+  color: var(--text);
+}
+.piano-inst button { padding: 1px 3px; font-size: 11px; }
+.piano-inst-astros {
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--accent);
+  white-space: nowrap;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Secuenciador 2 ---------- */
+.sec2-seguir {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-soft);
+  margin: 2px 0 8px;
+}
+.sec2-filas {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+}
+.sec2-fila {
+  display: grid;
+  grid-template-columns: 22px 1fr 62px;
+  gap: 4px;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: rgba(233, 226, 242, 0.04);
+  border: 1px solid rgba(138, 118, 201, 0.16);
+  font-size: 12px;
+}
+.sec2-fila.sec2-modulador { margin-left: 14px; opacity: 0.85; }
+.sec2-fila.drop-destino { border-color: var(--accent); }
+.sec2-fila.sonando {
+  outline: 2px solid #ffaa00;
+  outline-offset: -1px;
+}
+.sec2-fila.sonando .synth-name { color: #ffc04d; font-weight: 700; }
+.sec2-fila .synth-figura-astro {
+  font-size: 11px;
+  padding: 2px;
+  background: var(--campo);
+  border: 1px solid var(--campo-borde);
+  border-radius: 4px;
+  color: var(--text);
+}
+#seccion-secuenciador2.sec2-sonando > summary { color: #ffc04d; }
+
+/* ---------- Ventana de conjuntos de timbre ---------- */
+.timbre-barra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 10px 0;
+  font-size: 11px;
+  color: var(--text-soft);
+}
+.timbre-barra label { display: flex; align-items: center; gap: 5px; }
+.timbre-barra select {
+  font-size: 11px;
+  background: var(--campo);
+  border: 1px solid var(--campo-borde);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 2px 4px;
+}
+.timbre-fm-global input[type="range"] { width: 110px; }
+.timbre-fm-val { width: 28px; font-family: var(--font-display); }
+
+/* ---------- Arranque y rendimiento ---------- */
+.arranque-opciones {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.arranque-opciones label { display: flex; align-items: center; gap: 6px; }
+
+/* Aviso cuando el navegador tiene el audio suspendido hasta un gesto */
+.aviso-audio {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9000;
+  padding: 8px 16px;
+  font-size: 13px;
+  background: #2a2347;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 18px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  animation: pulso-fila-drone 1.6s ease-in-out infinite;
+}
+.aviso-audio[hidden] { display: none; }
+
+/* ---------- Conjunto de un astro en línea (piano / Secuenciador 2) ---------- */
+.conjunto-astro {
+  margin: 6px 0 8px;
+}
+.conjunto-astro-barra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  color: var(--text-soft);
+}
+.conjunto-astro-barra span { flex: 1 1 auto; }
+.conjunto-astro-barra b { color: var(--accent); font-weight: 600; }
+.conjunto-astro-barra button { font-size: 11px; padding: 2px 6px; }
+/* Se reparte en tantas columnas como quepan (≥210px cada una): en el
+   panel lateral salen dos, en una columna de la bandeja inferior una.
+   min-width:0 evita que los valores (77%, 5.0Hz…) desborden la tarjeta
+   y se encimen con la columna de al lado. */
+.rack-tarjeta.conjunto-inline {
+  width: auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 5px 12px;
+  overflow: hidden;
+}
+.rack-tarjeta.conjunto-inline > * { min-width: 0; }
+.rack-tarjeta.conjunto-inline .rack-nombre { display: none; }
+.rack-tarjeta.conjunto-inline .timbre-adsr { grid-column: 1 / -1; }
+.rack-tarjeta.conjunto-inline .adsr-svg { max-height: 130px; }
+.dock-contenido .conjunto-astro { break-inside: avoid; }
+
+/* Editor ADSR completo dentro de las tarjetas de conjuntos */
+.timbre-adsr .adsr-valores { margin-top: 3px; font-size: 10px; }
+.timbre-canales .rack-tarjeta,
+#ventana-rack-sintetizadores .rack-tarjeta { width: 250px; }
+.rack-adsr-mini { border: none; background: transparent; }
+.rack-fila .rack-valor { overflow: hidden; text-overflow: ellipsis; }
+
+/* Chips de astros del piano: casilla = pertenece al instrumento;
+   símbolo = ver/editar su conjunto */
+.piano-astro-simbolo {
+  background: none;
+  border: none;
+  padding: 1px 4px;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.piano-astro.editando {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+}
+.sec2-fila.editando { border-color: var(--accent-soft); background: rgba(138, 118, 201, 0.14); }
+
+/* ---------- Piano en la bandeja inferior: 4 columnas FIJAS ----------
+   El alto de columna (--piano-col-alto) lo pone _aplicarAltoDock()
+   según el alto de la bandeja: al agrandarla, las columnas crecen.
+   Las demás secciones usan columnas tipo periódico (el contenido fluye y
+   se rebalancea); el piano no, porque al sumar instrumentos todo se
+   reacomodaba. Aquí cada .piano-col es una columna de un grid, con alto
+   fijo y su propia barra: instrumentos | astros | conjunto | controles.
+   Si la bandeja es angosta, las columnas bajan a otra fila (auto-fit). */
+.dock-contenido > #seccion-piano { columns: auto; }
+.dock-contenido .piano-columnas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 14px 22px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+.dock-contenido .piano-col {
+  min-width: 0;
+  max-height: var(--piano-col-alto, 360px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.piano-insignia-fuera { cursor: pointer; }
+.piano-insignia-fuera:hover { fill: #fff2cf; }

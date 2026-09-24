@@ -19,8 +19,10 @@ web-v2/
     ├── data.js
     ├── theme.js            ← THEME (colores, grosores, radios)
     ├── colors.js
-    ├── synth.js            ← Web Audio: 10 osciladores, ADSR, modos
-    ├── piano.js            ← Modo piano microtonal polifónico + su teclado
+    ├── synth.js            ← Web Audio: 10 osciladores, ADSR, modos (Secuenciador 1)
+    ├── timbre.js           ← Conjuntos de timbre por astro + motor de voces + su editor
+    ├── piano.js            ← Piano microtonal: instrumentos (controlador + astros + timbre) y teclado
+    ├── sequencer2.js       ← Secuenciador 2 (independiente, con su propio timbre)
     ├── audio-outputs.js    ← Salidas de audio virtuales (setSinkId, para DAW externo)
     ├── banks.js            ← Bancos de fechas con overrides y MIDI binding
     ├── rhythms.js          ← Ritmos guardados y cadenas de ritmos
@@ -31,12 +33,29 @@ web-v2/
     ├── chart.js            ← Casas, planetas (texto/símbolo/imagen), aspectos
     ├── state.js
     ├── interaction.js      ← Toda la UI (synth, bancos, MIDI, formulario)
+    ├── arranque.js         ← Arranque automático, modo ligero, exportar/importar configuración
     ├── sketch.js
     ├── dev-panel.js        ← Editor visual del THEME (GITIGNORED)
     └── dev-panel.css       ← Estilos del editor (GITIGNORED)
 ```
 
 ## Correr
+
+La forma fácil: doble clic en **`iniciar-windows.bat`** (Windows) o
+**`iniciar-mac.command`** (macOS). Levantan el servidor, descargan una
+copia local de las librerías (para tocar sin internet) y abren Chrome de
+forma que el audio suene al abrir, sin clic. Ver
+[En una MacBook Pro 2012](#en-una-macbook-pro-2012).
+
+A mano (`servidor.py` es un servidor local más robusto que
+`http.server`: con este último, en Windows, Chrome a veces se queda sin
+algunos scripts al abrir la página y aparece «synth is not defined»):
+
+```bash
+python servidor.py 8123
+```
+
+o, si no tienes el proyecto completo,
 
 ```bash
 cd web-v2
@@ -49,7 +68,104 @@ python3 -m http.server 8000
 **Nota MIDI:** Web MIDI funciona en `localhost` sin HTTPS en Chrome/Edge/Opera.
 En Firefox necesitas activar `dom.webmidi.enabled` en `about:config`.
 
-## Lo nuevo en esta entrega (septiembre 2026)
+## Lo nuevo en esta entrega (finales de septiembre 2026)
+
+### 🎹 Varios controladores MIDI = varios instrumentos
+
+La sección **🎹 Piano microtonal** tiene ahora un bloque **✦ Instrumentos**.
+Arriba se listan los controladores MIDI conectados (con **✚ instrumento**
+para crear uno directo para ese controlador); abajo, una fila por
+instrumento con:
+
+- **◉** — el instrumento que tocan el teclado en pantalla y el del
+  ordenador, y el que editan los controles de abajo (astros, ruteo
+  paralelo/serie, volumen).
+- **Nombre** (así aparece en el mezclador).
+- **Controlador**: uno concreto, *Todos los controladores libres* (los que
+  no tengan instrumento propio) o *Ninguno* (solo teclado en pantalla/PC).
+  Si un controlador se desconecta, la asignación se conserva y se
+  reencuentra por nombre al volver a conectarlo.
+- **Canal** MIDI (Omni = todos).
+- **🎛** — su conjunto de timbre (ver abajo) y **✕** para borrarlo.
+
+Cada instrumento tiene su propio grupo de astros, su propio sintetizador y
+su propio canal en el mezclador (volumen, pan, mute, solo, envío a salida
+virtual). Con un solo instrumento en *Todos los controladores libres* todo
+funciona igual que antes; la configuración vieja del piano se convierte
+sola en el instrumento «Piano» con el timbre que tenían los astros.
+
+### 🎛 Conjuntos de timbre por astro
+
+Cada instrumento del piano (y el Secuenciador 2) tiene su **conjunto**: por
+cada astro, **ganancia, octava, forma de onda, armónicos pares/impares,
+profundidad FM, HPF y LPF con resonancia, pan, desafinación (¢), vibrato
+(profundidad y velocidad) y ADSR** — más la profundidad FM general.
+
+La forma directa: en **✦ Astros de …** del piano, la casilla ☐ de cada
+astro dice si toca en el instrumento y **clic en su símbolo muestra su
+conjunto ahí mismo**, debajo de los astros (otro clic lo oculta;
+**⟲ Del Sec. 1** copia solo ese astro del rack y **⧉ Todos** abre la
+ventana). En el Secuenciador 2, lo mismo con clic en el nombre del astro.
+También se editan en la ventana **🎛 Conjuntos de timbre** (botón 🎛 del instrumento o
+**🎛 Timbre** debajo de los astros); el selector de arriba cambia de
+instrumento sin cerrarla, *Solo los del conjunto* muestra únicamente los
+astros que usa, y **⟲ Copiar del Secuenciador 1** parte del timbre del
+rack. Los cambios se guardan al instante y aplican a las notas nuevas.
+El Secuenciador 1 sigue usando el **🎛 Rack de sintetizadores** de siempre.
+
+### 🥁 Secuenciador 2
+
+Nueva sección **🥁 Secuenciador 2**, independiente del primero y capaz de
+sonar a la vez: sus propios astros marcados, orden (↑↓, arrastrar,
+☉→♇ / ♇→☉ / 🎲 / ≈ Región), figura global y por astro, ritmos aleatorios,
+gate, velocidad, **BPM propio o *Seguir el BPM del Secuenciador 1***,
+**conexión FM** propia (los mismos algoritmos, sobre su orden: ↳ marca a
+los moduladores), afinación continua o por región y su propio **conjunto
+de timbre**. **▶▶ Ambos** arranca los dos secuenciadores en el mismo
+instante de audio y **■■ Ambos** los detiene; **⇐ Ritmo del Sec. 1** copia
+figuras y orden para variar a partir de ahí. Tiene canal en el mezclador y
+su propio transporte mapeable por MIDI (**Transporte Sec. 2** en el mapeo
+de parámetros).
+
+### ⚡ Todo encendido al abrir
+
+Al abrir el programa ya está todo activo menos los secuenciadores: el
+audio encendido, los astros marcados (todos la primera vez; después, como
+los dejaste), los instrumentos del piano listos y el MIDI activado. Se
+controla en la nueva sección **⚙ Arranque y rendimiento**. Los navegadores
+exigen un clic o una tecla antes de dejar sonar una página: si hace falta,
+aparece arriba el aviso *🔈 El navegador espera un clic…* y el primer
+gesto lo resuelve. Con los lanzadores (`iniciar-*.bat/.command`) Chrome se
+abre con `--autoplay-policy=no-user-gesture-required` y suena de inmediato.
+La misma sección tiene **⤓ Exportar / ⤒ Importar configuración**: todo
+(sintetizador, instrumentos, secuenciadores, bancos, ritmos, MIDI, tema…)
+en un solo archivo.
+
+### En una MacBook Pro 2012
+
+1. Copia la carpeta del proyecto a la Mac (git clone, USB o nube).
+2. Instala **Google Chrome** (Safari no tiene Web MIDI). En macOS 10.15
+   Catalina la última versión compatible es Chrome 128; en 10.13–10.14,
+   Chrome 116. Ambas sirven.
+3. Doble clic en **`iniciar-mac.command`**. La primera vez macOS puede
+   bloquearlo: clic derecho → **Abrir**. Si dice que no tiene permiso de
+   ejecución (pasa al copiarlo desde Windows), en Terminal:
+   `chmod +x iniciar-mac.command`.
+4. El lanzador descarga las librerías a `vendor/` (una vez), levanta el
+   servidor con el Python que traiga la Mac (3 o el 2.7 de fábrica) y abre
+   Chrome en ventana de aplicación con **modo ligero** (`?ligero=1`:
+   resolución 1× y 30 fps, cuatro veces menos píxeles en pantallas
+   Retina). Chrome pide permiso de MIDI la primera vez.
+5. Para llevar tu configuración: **⤓ Exportar configuración** en esta
+   computadora e **⤒ Importar configuración** en la Mac.
+
+El lanzador usa un perfil de Chrome propio (en
+`~/Library/Application Support/CartaAstralSonica-Chrome`), así que la
+configuración de esa ventana es independiente de tu Chrome normal. En
+equipos viejos, conviene no abusar de la polifonía con muchos astros por
+instrumento (cada astro de cada nota crea sus propios osciladores).
+
+## Lo nuevo en la entrega de septiembre 2026
 
 ### 🔌 Salidas de audio virtuales (para Ableton y otros DAW)
 
@@ -108,9 +224,8 @@ timbre juntos, sin tener que navegar entre secciones:
   panel lateral.
 - **Volumen** y **armónicos** (pares/impares) — tocar los armónicos cambia la
   forma de onda a "Personalizada" automáticamente, igual que en el panel.
-- **ADSR**: una mini-gráfica arrastrable (ataque, decay/sustain, release) por
-  astro; la curvatura de cada tramo sigue editándose solo desde el editor
-  grande del panel lateral.
+- **ADSR**: el mismo editor del panel lateral por astro (vértices
+  arrastrables y rombos que curvan cada tramo).
 - **Profundidad FM propia** (`fmProfundidadAstro`, nuevo): un multiplicador
   0–2 sobre el knob global de profundidad FM, que solo pesa cuando ese astro
   actúa como **modulador** en la cadena del algoritmo FM activo.
@@ -511,7 +626,10 @@ Sistemas independientes en `localStorage`:
 | `cas-theme-v1` | Colores, grosores, radios, imágenes por astro |
 | `cas-synth-config-v1` | Modo, octavas, volumen, ADSR |
 | `cas-banks-v1` | Lista de bancos de fechas |
-| `cas-piano-v1` | Modo piano: astros, ruteo, anclaje, octavas, opciones |
+| `cas-piano-v1` | Piano: instrumentos (controlador, canal, astros, ruteo, conjunto de timbre, canal del mezclador), anclaje, octavas, opciones |
+| `cas-secuenciador2-v1` | Secuenciador 2: astros, orden, figuras, BPM, gate, FM, conjunto de timbre, canal del mezclador |
+| `cas-arranque-v1` | Arranque automático (audio, MIDI) y modo ligero |
+| `cas-editor-timbre-v1` | Posición de la ventana de conjuntos de timbre |
 | `cas-ritmos-v1` | Ritmos guardados (con su nota MIDI), cadena de ritmos y si está encadenada |
 | `cas-midi-map-v1` | Mapeo MIDI de parámetros: modo, nota base / CC, canal y asignaciones del modo Libre |
 
@@ -538,4 +656,6 @@ Sistemas independientes en `localStorage`:
 - Persistir la vista elegida (carta/fondo) entre sesiones
 - Ratios FM por par modulador/carrier (como el coarse/fine del Operator)
 - Grabar y reproducir lo tocado en el piano microtonal
+- Cadena de ritmos también para el Secuenciador 2
+- Conjuntos de timbre guardables como presets reutilizables entre instrumentos
 - Escalas del piano por selección de regiones (modos/escalas dentro de la rueda)
